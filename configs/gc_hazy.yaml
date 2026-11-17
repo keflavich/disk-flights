@@ -1,0 +1,11 @@
+# GC preset under a hazy (aerosol tau_550 = 0.4) atmosphere over a meadow.
+scenario: {mode: gc, lat_deg: 40.0, hour_angle_deg: -60.0, sun: {enabled: true, ecliptic_longitude_deg: 180.0}}
+starfield: {seed: 1, r_res_pc: 25.0}
+galaxy: {enabled: true, nside: 256, use_gas: true}
+atmosphere: earth_hazy
+foreground: {type: meadow, seed: 4}
+views:
+  - {name: toward_nsc, kind: perspective, width: 1920, height: 1080, fov_deg: 60.0,
+     azimuth_deg: auto, pitch_deg: auto, target: sgr_a_star}
+  - {name: allsky, kind: allsky, width: 1024, height: 1024}
+camera: {mode: eye}

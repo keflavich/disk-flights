@@ -1,0 +1,40 @@
+# Earth comparison for gc_arches_timelapse.yaml: dark site at +40 deg on the September equinox
+# (earth_darksky.yaml sky), same frame list, view sizes, spp and exposure settings.
+# Sun at ecliptic longitude 0: local solar time t = 12 + H / 15 h. Run from src/:
+#   python3 -m nightsky.animate ../configs/earth_darksky_timelapse.yaml [--hours 0:24 --frames 288] [--scale 0.25]
+scenario:
+  mode: earth
+  lat_deg: 40.0
+  hour_angle_deg: 125.0      # replaced per frame by nightsky.animate
+  sun: {enabled: true, ecliptic_longitude_deg: 0.0}
+starfield: {mode: earth, bsc: {enabled: true, vmax: 6.5}, sun_ra_deg: 180.0}
+galaxy: {enabled: true, nside: 256, use_gas: false}
+atmosphere: earth_observatory
+foreground: {type: mountains, seed: 1, albedo_set: summer}
+foreground_render: {spp: 32, n_lights: 32, env_nside: 64}
+views:
+  # pointing frozen at 20:20 (= earth_darksky.yaml H = 125 deg): Galactic Center low in the SW
+  - {name: milky_way, kind: perspective, width: 1280, height: 720, fov_deg: 60.0,
+     azimuth_deg: auto, pitch_deg: auto, target: galactic_center, horizon_frac: 0.2}
+  - {name: allsky, kind: allsky, width: 720, height: 720}
+sky: {subsample: 2}
+points: {psf_sigma_px: 0.6, seeing_fwhm_arcsec: 1.5, radius_px: 4}
+camera:
+  mode: eye
+  glare: true
+  mesopic: true
+  age_years: 25
+  pigmentation: 0.5
+  annotate: false
+output: {png: true, npz: true, spectral: false}
+animation:
+  hours: "0:24:0.25"
+  fps: 24
+  exposure: smoothed,per-frame
+  tau_light_min: 1.0
+  tau_dark_min: 10.0
+  pointing: fixed
+  pointing_time_h: 20.333
+  overlay: true
+  seed_cache: renders/nightsky/earth_darksky/cache
+  keep_frame_cache: false

@@ -1,0 +1,19 @@
+# The earlier toy setup (README Stage 3): Arches (1.5e4 Msun, ZAMS) at the pole, the 1000 Msun
+# ZAMS box of local field stars and the 1000 au companion; no galaxy model, no gas.
+scenario: {mode: gc, lat_deg: 40.0, hour_angle_deg: 180.0}
+starfield:
+  seed: 1
+  arches: {enabled: true}
+  quintuplet: {enabled: false}
+  nsc_young: {enabled: false}
+  field_massive: {enabled: false}
+  local_old_population: {enabled: false}
+  local_zams_box: {enabled: true, mass: 1000.0, m_min: 0.3, m_max: 4.0, box_pc: 1.0, min_dist_au: 50.0, seed: 7}
+  companion: {enabled: true, sep_au: 1000.0, inclination_deg: 25.0}
+galaxy: {enabled: false}
+atmosphere: earth_clear
+foreground: {type: plane, seed: 1}
+views:
+  - {name: allsky, kind: allsky, width: 1080, height: 1080}
+  - {name: north, kind: perspective, width: 1280, height: 720, azimuth_deg: 0.0, pitch_deg: 22.0, fov_deg: 110.0}
+camera: {mode: eye}

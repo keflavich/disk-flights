@@ -1,0 +1,15 @@
+third_party/
+data/
+renders/
+slurm/logs/
+.claude/
+.pytest_cache/
+notebooks/
+renders/**/*.npy
+renders/**/*.exr
+__pycache__/
+*.pyc
+*.log
+*.npz
+*.mp4
+.htpasswd

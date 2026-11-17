@@ -1,0 +1,18 @@
+# What-if: the GC planet sits at the centre of a 3 pc dark cloud with A_V = 4 from the centre to
+# the outside in every direction (galaxy.extra_fields, see nightsky/clouds.py). The cloud dims and
+# reddens the whole GC sky (galaxy map and every point source beyond it).
+scenario: {mode: gc, lat_deg: 40.0, hour_angle_deg: -60.0, sun: {enabled: true, ecliptic_longitude_deg: 180.0}}
+starfield: {seed: 1, r_res_pc: 25.0}
+galaxy:
+  enabled: true
+  nside: 256
+  use_gas: true
+  extra_fields:
+    - {kind: extinction, profile: gauss, radius_pc: 1.0, av_center: 4.0, n_vox: 81, name: dark_cloud}
+atmosphere: earth_clear
+foreground: {type: mountains, seed: 1, albedo_set: summer}
+views:
+  - {name: toward_nsc, kind: perspective, width: 1920, height: 1080, fov_deg: 60.0,
+     azimuth_deg: auto, pitch_deg: auto, target: sgr_a_star, horizon_frac: 0.2}
+  - {name: allsky, kind: allsky, width: 1024, height: 1024}
+camera: {mode: eye}

@@ -1,0 +1,19 @@
+# Earth reference with a waxing gibbous Moon (elongation 120 deg, V -11.1, 30 deg up near the
+# meridian). Otherwise identical to earth_darksky.yaml: dark site at +40 deg on the September equinox, H = 125 deg (20:20 local solar
+# time; Sun 26 deg below the horizon, Galactic Center 12 deg up in the SW).
+# Stars: Yale Bright Star Catalogue V < 6.5; Milky Way from the galaxy model seen from the Sun.
+scenario:
+  mode: earth
+  lat_deg: 40.0
+  hour_angle_deg: 125.0
+  sun: {enabled: true, ecliptic_longitude_deg: 0.0}
+  moon: {enabled: true, elongation_deg: 120.0}
+starfield: {mode: earth, bsc: {enabled: true, vmax: 6.5}, sun_ra_deg: 180.0}
+galaxy: {enabled: true, nside: 256, use_gas: false}
+atmosphere: earth_observatory
+foreground: {type: meadow, seed: 5, albedo_set: summer}
+views:
+  - {name: moon, kind: perspective, width: 1920, height: 1080, fov_deg: 90.0,
+     azimuth_deg: 175.0, pitch_deg: 20.0}
+  - {name: allsky, kind: allsky, width: 1024, height: 1024}
+camera: {mode: eye}

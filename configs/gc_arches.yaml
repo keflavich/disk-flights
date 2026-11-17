@@ -1,0 +1,46 @@
+# Photoreal Galactic Center preset: solar system 3 pc from the Arches cluster on the Sun-facing
+# side, planet's north celestial pole on the Arches, latitude +40 deg.
+# H = -60 deg puts Sgr A* / the nuclear star cluster 27 deg up in the ESE (az 105 deg).
+# The Sun sits at the opposite equinox (ecliptic longitude 180), 22 deg below the horizon.
+#   sbatch slurm/nightsky.sbatch configs/gc_arches.yaml        (32 cpu; preview: add --scale 0.25)
+scenario:
+  mode: gc
+  lat_deg: 40.0
+  hour_angle_deg: -60.0
+  observer_offset_dir: [1.0, 0.0, 0.0]
+  observer_distance_pc: 3.0
+  roll_deg: 0.0
+  sun: {enabled: true, ecliptic_longitude_deg: 180.0}
+grid: {n_bins: 20, lo: 380.0, hi: 780.0}
+starfield:            # starfield.DEFAULTS fill everything not given here
+  seed: 1
+  r_res_pc: 25.0
+  arches: {enabled: true}
+  quintuplet: {enabled: true}
+  nsc_young: {enabled: true}
+  field_massive: {enabled: true}
+  local_old_population: {enabled: true}
+  local_zams_box: {enabled: false}
+  companion: {enabled: true, sep_au: 1000.0, inclination_deg: 25.0}
+galaxy:
+  enabled: true
+  preset: milky_way
+  nside: 256          # galaxy map (0.23 deg pixels); the starfield keeps its own nside-128 map
+  use_gas: true
+  gas_seed: 0
+atmosphere: earth_clear
+foreground: {type: mountains, seed: 1, albedo_set: summer}
+foreground_render: {spp: 64, n_lights: 32, env_nside: 64}
+views:
+  - {name: toward_nsc, kind: perspective, width: 1920, height: 1080, fov_deg: 60.0,
+     azimuth_deg: auto, pitch_deg: auto, target: sgr_a_star, horizon_frac: 0.2}
+  - {name: allsky, kind: allsky, width: 1024, height: 1024}
+sky: {subsample: 2}
+points: {psf_sigma_px: 0.6, seeing_fwhm_arcsec: 1.5, radius_px: 4}
+camera:
+  mode: eye
+  glare: true
+  mesopic: true
+  age_years: 25
+  pigmentation: 0.5
+output: {png: true, npz: true, spectral: false}

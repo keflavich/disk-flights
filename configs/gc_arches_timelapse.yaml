@@ -1,0 +1,62 @@
+# Day-night time-lapse of the gc_arches.yaml sky (same scenario, sources, atmosphere and terrain):
+# solar system 3 pc from the Arches cluster (the planet's north celestial pole), latitude +40 deg,
+# equinox, Sun at ecliptic longitude 180 (local solar time t = H / 15 h; t = 0 is midnight, when
+# Sgr A* culminates ~59 deg up in the south). Run from src/:
+#   python3 -m nightsky.animate ../configs/gc_arches_timelapse.yaml [--hours 0:24 --frames 288] [--scale 0.25]
+# Outputs under renders/nightsky/gc_arches_timelapse/: frames/h<t>/ (compose outputs per frame),
+# <view>_<exposure>/ numbered PNGs + .mp4, animation.json (times, Sun altitude, La per frame).
+scenario:
+  mode: gc
+  lat_deg: 40.0
+  hour_angle_deg: -60.0      # replaced per frame by nightsky.animate
+  observer_offset_dir: [1.0, 0.0, 0.0]
+  observer_distance_pc: 3.0
+  roll_deg: 0.0
+  sun: {enabled: true, ecliptic_longitude_deg: 180.0}
+grid: {n_bins: 20, lo: 380.0, hi: 780.0}
+starfield:                   # identical to gc_arches.yaml, so its starfield / galaxy cache is reused
+  seed: 1
+  r_res_pc: 25.0
+  arches: {enabled: true}
+  quintuplet: {enabled: true}
+  nsc_young: {enabled: true}
+  field_massive: {enabled: true}
+  local_old_population: {enabled: true}
+  local_zams_box: {enabled: false}
+  companion: {enabled: true, sep_au: 1000.0, inclination_deg: 25.0}
+galaxy:
+  enabled: true
+  preset: milky_way
+  nside: 256
+  use_gas: true
+  gas_seed: 0
+atmosphere: earth_clear
+foreground: {type: mountains, seed: 1, albedo_set: summer}
+foreground_render: {spp: 32, n_lights: 32, env_nside: 64}
+views:
+  # pointing frozen at animation.pointing_time_h (20:00, = gc_arches.yaml H = -60 deg):
+  # Sgr A* / NSC rising in the ESE, horizon in the lower fifth of the frame
+  - {name: toward_nsc, kind: perspective, width: 1280, height: 720, fov_deg: 60.0,
+     azimuth_deg: auto, pitch_deg: auto, target: sgr_a_star, horizon_frac: 0.2}
+  - {name: allsky, kind: allsky, width: 720, height: 720}
+sky: {subsample: 2}
+points: {psf_sigma_px: 0.6, seeing_fwhm_arcsec: 1.5, radius_px: 4}
+camera:
+  mode: eye
+  glare: true
+  mesopic: true
+  age_years: 25
+  pigmentation: 0.5
+  annotate: false
+output: {png: true, npz: true, spectral: false}
+animation:
+  hours: "0:24:0.25"         # local solar time start:stop:step (h); 96 frames
+  fps: 24
+  exposure: smoothed,per-frame
+  tau_light_min: 1.0         # light adaptation time constant (scene minutes)
+  tau_dark_min: 10.0         # dark adaptation time constant (scene minutes)
+  pointing: fixed            # fixed (tripod) | track (re-aim at the target every frame)
+  pointing_time_h: 20.0
+  overlay: true
+  seed_cache: renders/nightsky/gc_arches/cache
+  keep_frame_cache: false

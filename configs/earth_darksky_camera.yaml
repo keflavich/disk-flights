@@ -1,0 +1,10 @@
+# earth_darksky.yaml through a camera: ISO 3200, f/2.8, 20 s (a common Milky Way exposure).
+scenario: {mode: earth, lat_deg: 40.0, hour_angle_deg: 125.0, sun: {enabled: true, ecliptic_longitude_deg: 0.0}}
+starfield: {mode: earth, bsc: {enabled: true, vmax: 6.5}, sun_ra_deg: 180.0}
+galaxy: {enabled: true, nside: 256, use_gas: false}
+atmosphere: earth_observatory
+foreground: {type: meadow, seed: 5, albedo_set: summer}
+views:
+  - {name: milky_way, kind: perspective, width: 1920, height: 1080, fov_deg: 90.0,
+     azimuth_deg: auto, pitch_deg: auto, target: galactic_center, horizon_frac: 0.15}
+camera: {mode: camera, iso: 3200, f_number: 2.8, exposure_s: 20.0, bloom: 0.01, spikes: 0}

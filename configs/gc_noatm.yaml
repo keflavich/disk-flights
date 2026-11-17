@@ -1,0 +1,13 @@
+# GC sky in vacuum, no foreground: the top-of-atmosphere sky as an airless body would see it.
+scenario: {mode: gc, lat_deg: 40.0, hour_angle_deg: -60.0}
+starfield: {seed: 1, r_res_pc: 25.0}
+galaxy: {enabled: true, nside: 256, use_gas: true}
+atmosphere: none
+foreground: null
+views:
+  - {name: toward_nsc, kind: perspective, width: 1920, height: 1080, fov_deg: 60.0,
+     azimuth_deg: auto, pitch_deg: auto, target: sgr_a_star}
+  - {name: allsky, kind: allsky, width: 1024, height: 1024}
+  - {name: panorama, kind: panorama, width: 2048, height: 512, azimuth_deg: 105.0, az_span_deg: 360.0,
+     el_min_deg: -10.0, el_max_deg: 80.0}
+camera: {mode: eye}

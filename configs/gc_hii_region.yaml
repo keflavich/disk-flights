@@ -1,0 +1,18 @@
+# What-if: the GC planet sits inside an Orion-like HII region (uniform n_e = 300 cm^-3 out to
+# 2 pc, T_e = 8000 K, emission measure ~1.8e5 pc cm^-6 from the centre to the edge), added with
+# galaxy.extra_fields (nightsky/clouds.py). Recombination lines and nebular continuum fill the sky.
+scenario: {mode: gc, lat_deg: 40.0, hour_angle_deg: -60.0, sun: {enabled: true, ecliptic_longitude_deg: 180.0}}
+starfield: {seed: 1, r_res_pc: 25.0}
+galaxy:
+  enabled: true
+  nside: 256
+  use_gas: true
+  extra_fields:
+    - {kind: emission, profile: uniform, radius_pc: 2.0, n_e: 300.0, t_e: 8000.0, template: hii_dense, n_vox: 64, name: hii_region}
+atmosphere: earth_clear
+foreground: {type: meadow, seed: 4, albedo_set: summer}
+views:
+  - {name: toward_nsc, kind: perspective, width: 1920, height: 1080, fov_deg: 60.0,
+     azimuth_deg: auto, pitch_deg: auto, target: sgr_a_star, horizon_frac: 0.2}
+  - {name: allsky, kind: allsky, width: 1024, height: 1024}
+camera: {mode: eye}
