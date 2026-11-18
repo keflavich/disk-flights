@@ -35,6 +35,29 @@ License: BSD-3-Clause (see `LICENSE`).
 - Validation: distant-camera SEDs against Hyperion's peeled SEDs (optical star within 1.5 %,
   scattered light -8 % to +17 %; thermal 10-160 um and 1.3 mm within 2 %).
 
+### Planet-gap disk (`src/diskplanet`)
+
+A non-axisymmetric version of one grid model (dIULECee) with a q = 1e-3 planet at 100 au carving a
+gap, from [PPDONet](https://github.com/andizq/PPDONet) (alpha = 1e-3, h0 = 0.051):
+
+- `ppdo_predict.py`: PPDONet surface density (needs PPDONet + jax in a separate venv under
+  `third_party/`, not tracked; PPDONet is GPL) -> `sigma_*.npz`.
+- `perturb.py`: delta(R, phi) = Sigma / Sigma_0, tapered in PPDONet's damping zones;
+  rho_3d = rho_axi(R, z) * delta(R, phi).
+- `hyperion3d.py`: 3D spherical-polar Hyperion input from the model's 2D grid (128 phi cells),
+  optional planet point source (1e-4 Lsun, 1200 K blackbody); run with `slurm/hyperion3d.sbatch`.
+- `model3d.PlanetDisk`: the renderer's disk model with a (phi, ln r, mu) column/temperature
+  table; 3D Hyperion temperature where it has enough photons, axisymmetric temperature otherwise.
+- The renderer (`diskorbit`) takes the perturbation through `--set planet_sigma=...`; the scattering
+  Monte Carlo is binned in phi (`mc_nphi`), and the pattern can co-rotate with the camera
+  (`pattern_mode=coorbit`) or stay fixed.
+- `slurm/diskplanet_movie.sh {coorbit|lap} {vis|ir|post}` submits frame-range jobs and runs the
+  develop / star layer / key steps.
+
+Known limitation: delta(R, phi) multiplies the density at every height, so the planet's
+overdensity extends through the disk surface layers and shows as a vertical streak through the
+planet in the movies.
+
 ## Night skies
 
 ## nightsky: configurable night-sky renderer (current pipeline)

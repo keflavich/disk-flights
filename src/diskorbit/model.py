@@ -109,6 +109,23 @@ class DiskModel:
         self.temp_grid = self._fill_rim(self.temp_raw)
         self.params = np.array([self.rho0, self.r0, self.h0, self.beta, self.p, self.rmin, self.rmax])
 
+    # ------------------------------------------------------------------ axisymmetric defaults of
+    # the (phi, theta, r) interface used by the renderer and the Monte Carlo; non-axisymmetric
+    # models (diskplanet) override these
+    mc_nphi = 1
+    tag = ""
+    t_tag = ""
+
+    @property
+    def pert(self):
+        """(PT, LD) density perturbation for the kernels; switched off."""
+        return np.zeros(5), np.zeros((2, 2))
+
+    def cells(self):
+        """Radiative-transfer grid for the thermal-emission packets: (r walls AU, theta walls,
+        phi walls (Hyperion convention, [0, 2 pi]), density (nphi, nt, nr) g cm^-3, T (nphi, nt, nr) K)."""
+        return self.r_walls, self.t_walls, np.array([0.0, 2 * np.pi]), self.rho_grid[None], self.temp_grid[None]
+
     def _warm_rim_radius(self, t_floor=3.0, tau_v_min=1.0):
         """Smallest inner wall radius (AU) of the first warm (> t_floor) cell over the polar angles
         where the cold dusty skin in front of it is optically thick (tau_V > tau_v_min)."""
@@ -199,12 +216,13 @@ class DiskModel:
         return vals.reshape(grid.n, -1).mean(axis=1)
 
     # ------------------------------------------------------------------ (ln r, mu) tables
-    def tables(self, n_r=1500, n_mu=3000, r_out_fac=1.02):
+    def tables(self, n_r=1500, n_mu=3000, r_out_fac=1.02, mu_top=1.0):
         """Radial column from the star N(r, mu) = int_0^r rho dr' (g cm^-3 AU) and dust
         temperature T(r, mu), on ln r = linspace(ln rmin, ln(r_out_fac rmax), n_r) and
-        mu = |cos theta| = linspace(0, 1, n_mu)."""
+        mu = |cos theta| = linspace(0, mu_top, n_mu) (lookups clamp at mu_top: use mu_top < 1
+        only where the column above it is negligible)."""
         lnr = np.linspace(np.log(self.rmin), np.log(self.rmax * r_out_fac), n_r)
-        mu = np.linspace(0.0, 1.0, n_mu)
+        mu = np.linspace(0.0, mu_top, n_mu)
         r = np.exp(lnr)
         # column: integrate on a 4x finer radial grid (trapezoid in r), keep every 4th node
         rf = np.exp(np.linspace(lnr[0], lnr[-1], 4 * (n_r - 1) + 1))
@@ -236,7 +254,8 @@ class DiskModel:
         jt = np.clip(np.searchsorted(t_w, np.arccos(mu)) - 1, 0, len(t_w) - 2)
         jr = np.clip(np.searchsorted(r_w, np.maximum(r, self.rmin * (1 + 1e-9)), side="right") - 1, 0, len(r_w) - 2)
         T = np.where(self.rho_grid[jt][:, jr] > 0, T, 0.0).T.copy()
-        return {"lnr": lnr, "mu": mu, "ncol": ncol, "temp": T}
+        # leading phi axis of length 1 (axisymmetric)
+        return {"lnr": lnr, "mu": mu, "ncol": ncol[None], "temp": T[None], "phi0": 0.0, "dphi": 1.0}
 
 
 def default_model():

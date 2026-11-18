@@ -26,16 +26,30 @@ import views as vw
 
 from .model import DiskModel, AU_M
 from . import bands as bd
-from .raymarch import render_rays
+from .raymarch import render_rays, column_segment
+from .kernels import node_interp3
 from . import mcscat
 
 DEFAULTS = dict(model="dIULECee", bands="vis", nbins=20, a_au=30.0, inc_deg=30.0, toward_star_deg=35.0,
-                fov_deg=100.0, width=1920, height=1080, frac=0.2, dtau_max=1.0, tau_stop=30.0)
+                fov_deg=100.0, width=1920, height=1080, frac=0.2, dtau_max=1.0, tau_stop=30.0,
+                # non-axisymmetric (planet) disk: PPDONet sigma npz, planet radius, 3D Hyperion run
+                planet_sigma="", planet_rp=100.0, planet_rtin="", planet_rtout="", mc_nphi=32,
+                planet_lsun=0.0, planet_temp=1200.0,
+                # pattern azimuth: "fixed" -> planet at pattern_deg (inertial); "coorbit" -> the
+                # planet leads the camera's orbital phase by pattern_deg (same period)
+                pattern_mode="fixed", pattern_deg=0.0,
+                movie_name="", key_L_au=75.0, key_dex=7.0)  # movie file prefix (default diskorbit_<model>); key half-width, stretch
+
+
+def movie_prefix(p):
+    return p.get("movie_name") or f"diskorbit_{p['model']}"
 EYE = {"mode": "eye", "glare": True, "age_years": 25.0, "mesopic": True, "local_mesopic": True}
 
 
 class Scene:
-    def __init__(self, outdir, model="dIULECee", nbins=20, nphot=2e7, log=print, bands="vis"):
+    def __init__(self, outdir, model="dIULECee", nbins=20, nphot=2e7, log=print, bands="vis", disk=None):
+        """disk: a ready model object (e.g. a non-axisymmetric diskplanet model) instead of
+        DiskModel(model); its .tag goes into the cached Monte Carlo file name."""
         if bands == "vis":
             self.grid, tag = spectral.default_grid(nbins), f"{nbins}b"
         elif bands == "ir":
@@ -43,7 +57,8 @@ class Scene:
         else:
             raise ValueError(f"bands must be vis or ir, got {bands!r}")
         self.visible = bands == "vis"
-        self.model = DiskModel(model)
+        self.model = disk if disk is not None else DiskModel(model)
+        model = self.model.name + self.model.tag + ("" if self.visible else self.model.t_tag)
         # visual extinction per unit column, for labels (tau_V)
         self.k_v = float(self.model.optics(spectral.default_grid(1, 545.0, 555.0))["k"][0])
         self.opt = self.model.optics(self.grid)
@@ -56,32 +71,103 @@ class Scene:
             res = mcscat.scattered_field(self.model, self.grid, n_phot=int(nphot), log=log, thermal=not self.visible)
             np.savez_compressed(path, wl=self.grid.wl, **res)
         self.mc = dict(np.load(path))
+        if self.mc["J"].ndim == 3:  # cache from the axisymmetric code: add the phi axis, H_phi = 0
+            for q in ("J", "HR", "HZ"):
+                self.mc[q] = self.mc[q][:, None]
+            self.mc["HP"] = np.zeros_like(self.mc["J"])
         # F*/(4 pi) at 1 AU (W m^-2 nm^-1 sr^-1 per unit phase function)
         self.lfac = self.lb / (4 * np.pi * AU_M ** 2) / (4 * np.pi)
 
+    # The model may be non-axisymmetric (a planet's pattern) and rotate: pattern_angle (rad) is the
+    # pattern's azimuth in the camera (inertial) frame. Positions and directions passed to the
+    # methods below are inertial and are rotated into the model frame here.
+    pattern_angle = 0.0
+
+    def to_model(self, v):
+        c, s = np.cos(self.pattern_angle), np.sin(self.pattern_angle)
+        v = np.asarray(v, float)
+        out = v.copy()
+        out[..., 0] = c * v[..., 0] + s * v[..., 1]
+        out[..., 1] = -s * v[..., 0] + c * v[..., 1]
+        return out
+
+    def planet_irradiance(self, cam, frac=0.05):
+        """(unit direction to the planet (inertial), attenuated irradiance W m^-2 nm^-1 per bin,
+        column) or None when the model has no planet source."""
+        pl = getattr(self.model, "planet", None)
+        if pl is None:
+            return None
+        cm = self.to_model(cam)
+        pp = np.array([pl["x_au"], 0.0, 0.0])
+        d = pp - cm
+        dist = float(np.linalg.norm(d))
+        PT, LD = self.model.pert
+        n = column_segment(cm, pp, self.model.params, PT, LD, frac)
+        lb = mcscat.blackbody_bins(self.grid, pl["lum_w"], pl["temp_k"])
+        irr = lb / (4 * np.pi * (dist * AU_M) ** 2) * np.exp(-self.opt["k"] * n)
+        c, s = np.cos(self.pattern_angle), np.sin(self.pattern_angle)
+        u = d / dist
+        return np.array([c * u[0] - s * u[1], s * u[0] + c * u[1], u[2]]), irr, n
+
     def star_irradiance(self, cam):
         """Attenuated stellar irradiance at the camera, W m^-2 nm^-1 per bin."""
+        t = self.tab
+        cam = self.to_model(cam)
         r = float(np.linalg.norm(cam))
-        lnr, mu = self.tab["lnr"], self.tab["mu"]
-        x = np.clip(np.log(r), lnr[0], lnr[-1])
-        m = abs(cam[2]) / r
-        i = min(int((x - lnr[0]) / (lnr[1] - lnr[0])), len(lnr) - 2)
-        j = min(int(m / (mu[1] - mu[0])), len(mu) - 2)
-        tx = (x - lnr[i]) / (lnr[1] - lnr[0])
-        ty = (m - mu[j]) / (mu[1] - mu[0])
-        nc = self.tab["ncol"]
-        n = (1 - tx) * ((1 - ty) * nc[i, j] + ty * nc[i, j + 1]) + tx * ((1 - ty) * nc[i + 1, j] + ty * nc[i + 1, j + 1])
+        n = node_interp3(t["ncol"], t["lnr"][0], t["lnr"][1] - t["lnr"][0], t["mu"][0], t["mu"][1] - t["mu"][0],
+                         t["phi0"], t["dphi"], np.log(r), abs(cam[2]) / r, float(np.arctan2(cam[1], cam[0])))
         return self.lb / (4 * np.pi * (r * AU_M) ** 2) * np.exp(-self.opt["k"] * n), n
 
     def render(self, cam, dirs, frac=0.2, dtau_max=1.0, tau_stop=30.0):
         t, mc, o = self.tab, self.mc, self.opt
-        flat = np.ascontiguousarray(dirs.reshape(-1, 3), dtype=np.float64)
-        img, col = render_rays(np.asarray(cam, float), flat, self.model.params, o["k"], o["albedo"], o["g"],
+        cam = self.to_model(cam)
+        flat = np.ascontiguousarray(self.to_model(dirs.reshape(-1, 3)), dtype=np.float64)
+        PT, LD = self.model.pert
+        img, col = render_rays(np.asarray(cam, float), flat, self.model.params, PT, LD, o["k"], o["albedo"], o["g"],
                                o["phase"], self.lfac, self.grid.wl,
                                t["lnr"][0], t["lnr"][1] - t["lnr"][0], t["mu"][0], t["mu"][1] - t["mu"][0],
-                               t["ncol"], t["temp"], mc["elnr"][0], mc["elnr"][1] - mc["elnr"][0],
-                               len(mc["emu"]) - 1, mc["J"], mc["HR"], mc["HZ"], frac, dtau_max, tau_stop)
+                               float(t["phi0"]), float(t["dphi"]), t["ncol"], t["temp"],
+                               mc["elnr"][0], mc["elnr"][1] - mc["elnr"][0], len(mc["emu"]) - 1,
+                               mc["J"], mc["HR"], mc["HZ"], mc["HP"], frac, dtau_max, tau_stop)
         return img.reshape(dirs.shape[:-1] + (-1,)), col.reshape(dirs.shape[:-1])
+
+
+_DISKS = {}
+
+
+def make_scene(outdir, p, nphot=2e7, log=print, bands="vis"):
+    """Scene for parameter dict p: the grid model, or the planet-perturbed model when
+    p["planet_sigma"] is set (the model object is shared between scenes)."""
+    disk = None
+    if p.get("planet_sigma"):
+        from diskplanet.model3d import PlanetDisk
+        key = (p["model"], p["planet_sigma"], p["planet_rp"], p["planet_rtin"], p["planet_rtout"], p["mc_nphi"],
+               p["planet_lsun"], p["planet_temp"])
+        if key not in _DISKS:
+            _DISKS[key] = PlanetDisk(p["model"], p["planet_sigma"], p["planet_rp"], p["planet_rtin"] or None,
+                                     p["planet_rtout"] or None, mc_nphi=p["mc_nphi"], planet_lsun=p["planet_lsun"],
+                                     planet_temp=p["planet_temp"])
+        disk = _DISKS[key]
+    return Scene(outdir, p["model"], p["nbins"], nphot, log=log, bands=bands, disk=disk)
+
+
+def pattern_angle(p, phi_deg):
+    """Azimuth (rad, inertial) of the model pattern (planet) when the camera is at orbital phase
+    phi_deg."""
+    if p.get("pattern_mode", "fixed") == "coorbit":
+        return float(np.radians(phi_deg + p["pattern_deg"]))
+    return float(np.radians(p.get("pattern_deg", 0.0)))
+
+
+def deposit_planet(sc, img, v, pos, ir=False):
+    """Add the planet point source (if the model has one); returns (in frame, column)."""
+    r = sc.planet_irradiance(pos)
+    if r is None:
+        return 0, float("nan")
+    u, irr, n = r
+    if ir:
+        return deposit_ir(img, v, u[None], irr[None], sc.grid), float(n)
+    return camera.deposit_points(img, v, u[None], irr[None], POINTS, sc.grid), float(n)
 
 
 def look_basis(fwd, up_ref=(0.0, 0.0, 1.0)):
@@ -135,6 +221,7 @@ def render_frame(scene, pos, fwd, p, star=True):
     if star:
         nd = camera.deposit_points(img, v, (-pos / np.linalg.norm(pos))[None], irr[None],
                                    {"psf_sigma_px": 0.6, "radius_px": 4}, scene.grid)
+        deposit_planet(scene, img, v, pos, ir=not scene.visible)
     lux = float(spectral.luminance(irr, scene.grid)) if scene.visible else float("nan")
     return v, img, col, {"render_s": secs, "star_lux": lux,
                          "star_in_frame": nd, "star_column": float(nstar)}
@@ -152,7 +239,7 @@ def save_png(path, rgb8):
 
 # ----------------------------------------------------------------------------- commands
 def cmd_stills(a, p, log=print):
-    sc = Scene(a.outdir, p["model"], p["nbins"], a.nphot, log=log, bands=p["bands"])
+    sc = make_scene(a.outdir, p, a.nphot, log=log, bands=p["bands"])
     cases = [("above", 90.0), ("surface", phi_for_height(0.167, p["a_au"], p["inc_deg"])),
              ("upper_fog", phi_for_height(0.15, p["a_au"], p["inc_deg"])),
              ("deep_fog", phi_for_height(0.13, p["a_au"], p["inc_deg"])), ("midplane", 0.0)]
@@ -196,7 +283,7 @@ def hyperion_sed(model):
 
 def cmd_sed(a, p, log=print):
     """Distant-camera total flux per bin vs the model's own Hyperion SED (largest aperture)."""
-    sc = Scene(a.outdir, p["model"], p["nbins"], a.nphot, log=log, bands=p["bands"])
+    sc = make_scene(a.outdir, p, a.nphot, log=log, bands=p["bands"])
     wav, flux, ang = hyperion_sed(sc.model)
     D = 3000.0
     out = {}
@@ -292,7 +379,7 @@ def frame_path(outdir, i):
 
 def cmd_orbit(a, p, log=print):
     """Linear (pre-glare) XYZS + metadata per frame; existing frames are skipped (restartable)."""
-    sc = Scene(a.outdir, p["model"], p["nbins"], a.nphot, log=log, bands=p["bands"])
+    sc = make_scene(a.outdir, p, a.nphot, log=log, bands=p["bands"])
     os.makedirs(os.path.join(a.outdir, "frames"), exist_ok=True)
     phis = orbit_schedule(a.n_frames, p["inc_deg"])
     bdirs, birr, src = background_stars(sc.grid)
@@ -304,6 +391,7 @@ def cmd_orbit(a, p, log=print):
             continue
         t0 = time.time()
         pos, vel = orbit_state(phis[i], p["a_au"], p["inc_deg"])
+        sc.pattern_angle = pattern_angle(p, phis[i])
         fwd = camera_forward(pos, vel, p["toward_star_deg"])
         v, img, col, info = render_frame(sc, pos, fwd, p, star=False)
         bg = img.copy()
@@ -313,6 +401,7 @@ def cmd_orbit(a, p, log=print):
         _, sinfo = camera.deposit_points_eye(img, v, bdirs, b_att, POINTS, sc.grid, bg)
         irr, _ = sc.star_irradiance(pos)
         info["star_in_frame"] = camera.deposit_points(img, v, (-pos / np.linalg.norm(pos))[None], irr[None], POINTS, sc.grid)
+        info["planet_in_frame"], info["planet_column"] = deposit_planet(sc, img, v, pos)
         xyzs = camera.to_xyzs(img, sc.grid).astype(np.float32)
         xyzs[~v.valid] = 0
         ad = camera.eye_adaptation(xyzs, v.valid, EYE)
@@ -383,7 +472,7 @@ def band_stats(img, valid):
 def cmd_orbit_ir(a, p, log=print):
     """IR / mm frames: nu I_nu (W m^-2 sr^-1) per band, bfloat16, with the star, background stars."""
     p = dict(p, bands="ir")
-    sc = Scene(a.outdir, p["model"], p["nbins"], a.nphot, log=log, bands="ir")
+    sc = make_scene(a.outdir, p, a.nphot, log=log, bands="ir")
     fdir = os.path.join(a.outdir, "frames_ir")
     os.makedirs(fdir, exist_ok=True)
     phis = orbit_schedule(a.n_frames, p["inc_deg"])
@@ -399,12 +488,14 @@ def cmd_orbit_ir(a, p, log=print):
             continue
         t0 = time.time()
         pos, vel = orbit_state(phis[i], p["a_au"], p["inc_deg"])
+        sc.pattern_angle = pattern_angle(p, phis[i])
         fwd = camera_forward(pos, vel, p["toward_star_deg"])
         v, img, col, info = render_frame(sc, pos, fwd, p, star=False)
         _, bcol = sc.render(pos, bdirs[:, None, :], p["frac"], p["dtau_max"], p["tau_stop"])
         nbg = deposit_ir(img, v, bdirs, birr * np.exp(-np.outer(bcol[:, 0], sc.opt["k"])), sc.grid)
         irr, ncol = sc.star_irradiance(pos)
         info["star_in_frame"] = deposit_ir(img, v, (-pos / np.linalg.norm(pos))[None], irr[None], sc.grid)
+        info["planet_in_frame"], info["planet_column"] = deposit_planet(sc, img, v, pos, ir=True)
         nuinu = (img * sc.grid.wl).astype(np.float32)
         nuinu[~v.valid] = 0
         meta = {"frame": i, "phi_deg": float(phis[i]), "pos_au": pos.tolist(), "z_over_R": float(pos[2] / np.hypot(pos[0], pos[1])),
@@ -504,7 +595,7 @@ def cmd_develop_ir(a, p, log=print):
                 json.dump({"bands_um": list(bd.COLOUR_SETS[name]), "channel_weights": w.tolist(), "level": la.tolist(),
                            "mm_weight": float(1.0 / gm[mm_idx]), "mm_level": mm_la.tolist() if with_mm else None,
                            "fps": a.fps, "tau_light_s": a.tau_light_s, "tau_dark_s": a.tau_dark_s}, f)
-            out = animate.stitch(os.path.join(odir, "f%05d.png"), os.path.join(a.outdir, f"diskorbit_{p['model']}_{tag}"), a.fps, a.n_frames)
+            out = animate.stitch(os.path.join(odir, "f%05d.png"), os.path.join(a.outdir, f"{movie_prefix(p)}_{tag}"), a.fps, a.n_frames)
             log(f"wrote {out}")
 
 
@@ -555,7 +646,7 @@ def cmd_develop(a, p, log=print):
             json.dump({"La_cd_m2": [float(x) for x in la], "fps": a.fps, "tau_light_s": a.tau_light_s,
                        "tau_dark_s": a.tau_dark_s}, f)
         out = animate.stitch(os.path.join(a.outdir, f"movie_{mode}", "f%05d.png"),
-                             os.path.join(a.outdir, f"diskorbit_{p['model']}_{mode}"), a.fps, a.n_frames)
+                             os.path.join(a.outdir, f"{movie_prefix(p)}_{mode}"), a.fps, a.n_frames)
         log(f"wrote {out}")
 
 
@@ -583,7 +674,7 @@ def main():
         k, v = kv.split("=", 1)
         p[k] = type(DEFAULTS[k])(v)
     if a.cmd == "mc":
-        Scene(a.outdir, p["model"], p["nbins"], a.nphot, bands=p["bands"])
+        make_scene(a.outdir, p, a.nphot, bands=p["bands"])
     elif a.cmd == "stills":
         cmd_stills(a, p)
     elif a.cmd == "sed":

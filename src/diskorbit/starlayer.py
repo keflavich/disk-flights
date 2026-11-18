@@ -102,8 +102,8 @@ class StarLayer:
 def run(outdir, modes, p, n_frames, fps, nphot=2e7, log=print):
     import imageio.v3 as iio
     from nightsky import animate
-    from .render import Scene, make_view, orbit_state, camera_forward, orbit_schedule, save_png
-    sc = Scene(outdir, p["model"], p["nbins"], nphot, log=log)
+    from .render import make_scene, movie_prefix, pattern_angle, make_view, orbit_state, camera_forward, orbit_schedule, save_png
+    sc = make_scene(outdir, p, nphot, log=log)
     sl = StarLayer(sc, p["width"], p["height"], p["fov_deg"])
     log(f"star layer: {len(sl.dirs)} stars from {sl.source}; psf sigma {sl.sig:.2f} px, halo {sl.rh:.2f} px")
     phis = np.unwrap(np.radians(orbit_schedule(n_frames, p["inc_deg"])))
@@ -116,6 +116,7 @@ def run(outdir, modes, p, n_frames, fps, nphot=2e7, log=print):
         if all(os.path.exists(o) for o in outs):
             continue
         pos, vel = orbit_state(phis[i], p["a_au"], p["inc_deg"])
+        sc.pattern_angle = pattern_angle(p, phis[i])
         rgb, amp = sl.colours(pos, p)
         views = []
         for k in range(N_SUB):
@@ -131,7 +132,7 @@ def run(outdir, modes, p, n_frames, fps, nphot=2e7, log=print):
             log(f"stars frame {i}/{n_frames} ({time.time() - t0:.0f} s); {int((amp >= AMP_MIN).sum())} stars above cut")
     for m in modes:
         out = animate.stitch(os.path.join(outdir, f"movie_{m}_stars", "f%05d.png"),
-                             os.path.join(outdir, f"diskorbit_{p['model']}_{m}_stars"), fps, n_frames)
+                             os.path.join(outdir, f"{movie_prefix(p)}_{m}_stars"), fps, n_frames)
         log(f"wrote {out}")
 
 
@@ -151,8 +152,8 @@ def run_ir(outdir, sets, p, n_frames, fps, nphot=2e7, log=print):
     import imageio.v3 as iio
     from nightsky import animate
     from . import bands as bd
-    from .render import Scene, make_view, orbit_state, camera_forward, orbit_schedule, save_png
-    sc = Scene(outdir, p["model"], p["nbins"], nphot, log=log, bands="ir")
+    from .render import make_scene, movie_prefix, pattern_angle, make_view, orbit_state, camera_forward, orbit_schedule, save_png
+    sc = make_scene(outdir, p, nphot, log=log, bands="ir")
     vis = spectral.default_grid(20)
     dirs, irr_v, _, teff, source = starfield.earth_stars({"bsc": {"vmax": 6.5, "fetch": False}, "sun_ra_deg": 0.0}, vis)
     y_ref = spectral.to_xyz(starfield.vmag_irr_fast(np.array([6.0]), np.array([9600.0]), vis), vis)[0, 1]
@@ -174,6 +175,7 @@ def run_ir(outdir, sets, p, n_frames, fps, nphot=2e7, log=print):
         if not todo:
             continue
         pos, _ = orbit_state(phis[i], p["a_au"], p["inc_deg"])
+        sc.pattern_angle = pattern_angle(p, phis[i])
         _, col = sc.render(pos, dirs[:, None, :], p["frac"], p["dtau_max"], p["tau_stop"])
         views = []
         for k in range(N_SUB):
@@ -203,5 +205,5 @@ def run_ir(outdir, sets, p, n_frames, fps, nphot=2e7, log=print):
     for name in sets:
         for tg in tags[name]:
             out = animate.stitch(os.path.join(outdir, f"movie_{tg}_stars", "f%05d.png"),
-                                 os.path.join(outdir, f"diskorbit_{p['model']}_{tg}_stars"), fps, n_frames)
+                                 os.path.join(outdir, f"{movie_prefix(p)}_{tg}_stars"), fps, n_frames)
             log(f"wrote {out}")

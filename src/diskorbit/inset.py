@@ -25,7 +25,7 @@ import matplotlib as mpl
 mpl.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-from .render import DEFAULTS, orbit_state, camera_forward, orbit_schedule, look_basis  # noqa: E402
+from .render import DEFAULTS, movie_prefix, pattern_angle, orbit_state, camera_forward, orbit_schedule, look_basis  # noqa: E402
 
 OUTDIR = "/orange/adamginsburg/gc/visualization/renders/diskorbit"
 REF_W = 1600  # the flythrough key is 360 px wide on 1600 px frames; scale with frame width
@@ -43,27 +43,48 @@ class Inset:
         self.vh = np.degrees(np.arctan(np.tan(np.radians(p["fov_deg"]) / 2) * p["height"] / p["width"]))
         m = DiskModel(p["model"])
         self.h0, self.r0, self.beta, self.rmax = m.h0, m.r0, m.beta, m.rmax
+        self.L = float(p.get("key_L_au", L_AU))
         n = 600
-        g = np.linspace(-L_AU, L_AU, n)
-        X, Z = np.meshgrid(g, g[::-1])
-        rho = m.density(np.abs(X), Z)
-        self.logrho = np.where(rho > 0, np.log10(np.maximum(rho, 1e-300)), np.nan)
-        self.vmax = float(np.nanpercentile(self.logrho, 99.5))
-        self.vmin = self.vmax - 7.0
-        self.logrho = np.where(self.logrho < self.vmin, np.nan, self.logrho)
+        g = np.linspace(-self.L, self.L, n)
+        self.X, Z = np.meshgrid(g, g[::-1])
+        rho = m.density(np.abs(self.X), Z)
+        self.logrho_axi = np.where(rho > 0, np.log10(np.maximum(rho, 1e-300)), np.nan)
+        # non-axisymmetric (planet) model: the slice depends on the camera's azimuth in the
+        # pattern frame; the colour stretch is fixed by the axisymmetric slice
+        self.pert = None
+        if p.get("planet_sigma"):
+            from diskplanet.perturb import Perturbation
+            self.pert = Perturbation.from_npz(p["planet_sigma"], p["planet_rp"])
+        self.vmax = float(np.nanpercentile(self.logrho_axi, 99.5))
+        self.vmin = self.vmax - float(p.get("key_dex", 7.0))
+        self.logrho = self._mask(self.logrho_axi)
         # theta range covered by the orbit (inclined circle: |latitude| <= inc)
         self.th_lo, self.th_hi = 90.0 - p["inc_deg"], 90.0 + p["inc_deg"]
 
-    def draw(self, pos, fwd):
+    def _mask(self, lr):
+        return np.where(lr < self.vmin, np.nan, lr)
+
+    def slice_at(self, phi_model):
+        """log10 density in the meridional plane at azimuth phi_model (x > 0 side) and
+        phi_model + pi (x < 0 side)."""
+        if self.pert is None:
+            return self.logrho
+        ph = np.where(self.X >= 0, phi_model, phi_model + np.pi)
+        ph = np.angle(np.exp(1j * ph))
+        return self._mask(self.logrho_axi + self.pert(np.abs(self.X), ph) / np.log(10.0))
+
+    def draw(self, pos, fwd, psi=0.0):
+        """psi: pattern azimuth (rad, inertial), see render.pattern_angle."""
         s = self.s
+        img_slice = self.slice_at(np.arctan2(pos[1], pos[0]) - psi)
         W_px, FOOT = self.size, int(round(34 * s))
         H_px = W_px + FOOT
         fig = plt.figure(figsize=(W_px / 100.0, H_px / 100.0), dpi=100)
         fig.patch.set_facecolor((0.02, 0.02, 0.04, 0.80))
         ax = fig.add_axes([0, FOOT / H_px, 1, W_px / H_px])
-        L = L_AU
+        L = self.L
         ax.set_facecolor((0, 0, 0, 0.9))
-        ax.imshow(self.logrho, extent=(-L, L, -L, L), cmap="gray", vmin=self.vmin, vmax=self.vmax,
+        ax.imshow(img_slice, extent=(-L, L, -L, L), cmap="gray", vmin=self.vmin, vmax=self.vmax,
                   interpolation="bilinear", alpha=0.85)
         # disk outline: +-2 scale heights
         Rd = np.linspace(0.05, min(self.rmax, 1.5 * L), 400)
@@ -122,7 +143,7 @@ def _worker(args):
     if "inset" not in _W:
         _W["inset"] = Inset(p)
     pos, vel = orbit_state(phi, p["a_au"], p["inc_deg"])
-    img, th = _W["inset"].draw(pos, camera_forward(pos, vel, p["toward_star_deg"]))
+    img, th = _W["inset"].draw(pos, camera_forward(pos, vel, p["toward_star_deg"]), pattern_angle(p, phi))
     iio.imwrite(out, img)
     return i, th
 
@@ -144,7 +165,7 @@ def overlay(outdir, tag, keydir, p, n_frames, fps, margin=None):
     from nightsky.animate import find_ffmpeg
     exe, codec = find_ffmpeg()
     m = margin if margin is not None else int(round(16 * p["width"] / REF_W))
-    out = os.path.join(outdir, f"diskorbit_{p['model']}_{tag}_key.mp4")
+    out = os.path.join(outdir, f"{movie_prefix(p)}_{tag}_key.mp4")
     cmd = [exe, "-y", "-loglevel", "error",
            "-framerate", str(fps), "-start_number", "0", "-i", os.path.join(outdir, f"movie_{tag}", "f%05d.png"),
            "-framerate", str(fps), "-start_number", "0", "-i", os.path.join(keydir, "f%05d.png"),
@@ -164,8 +185,12 @@ def main():
     ap.add_argument("--fps", type=int, default=30)
     ap.add_argument("--nproc", type=int, default=8)
     ap.add_argument("--insets-only", action="store_true")
+    ap.add_argument("--set", action="append", default=[], help="parameter override key=value (as diskorbit.render)")
     a = ap.parse_args()
     p = dict(DEFAULTS)
+    for kv in a.set:
+        k, v = kv.split("=", 1)
+        p[k] = type(DEFAULTS[k])(v)
     keydir = make_insets(a.outdir, p, a.n_frames, a.nproc)
     if a.insets_only:
         return
