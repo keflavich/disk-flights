@@ -34,7 +34,10 @@ DEFAULTS = dict(model="dIULECee", bands="vis", nbins=20, a_au=30.0, inc_deg=30.0
                 fov_deg=100.0, width=1920, height=1080, frac=0.2, dtau_max=1.0, tau_stop=30.0,
                 # non-axisymmetric (planet) disk: PPDONet sigma npz, planet radius, 3D Hyperion run
                 planet_sigma="", planet_rp=100.0, planet_rtin="", planet_rtout="", mc_nphi=32,
-                planet_lsun=0.0, planet_temp=1200.0,
+                planet_lsun=0.0, planet_temp=1200.0, planet_clump_h=0.0,
+                # orbit phase speed: "surface" (slow at the lit surface layer, fast through the
+                # midplane) or "uniform"
+                orbit_speed="surface",
                 # pattern azimuth: "fixed" -> planet at pattern_deg (inertial); "coorbit" -> the
                 # planet leads the camera's orbital phase by pattern_deg (same period)
                 pattern_mode="fixed", pattern_deg=0.0,
@@ -142,11 +145,11 @@ def make_scene(outdir, p, nphot=2e7, log=print, bands="vis"):
     if p.get("planet_sigma"):
         from diskplanet.model3d import PlanetDisk
         key = (p["model"], p["planet_sigma"], p["planet_rp"], p["planet_rtin"], p["planet_rtout"], p["mc_nphi"],
-               p["planet_lsun"], p["planet_temp"])
+               p["planet_lsun"], p["planet_temp"], p["planet_clump_h"])
         if key not in _DISKS:
             _DISKS[key] = PlanetDisk(p["model"], p["planet_sigma"], p["planet_rp"], p["planet_rtin"] or None,
                                      p["planet_rtout"] or None, mc_nphi=p["mc_nphi"], planet_lsun=p["planet_lsun"],
-                                     planet_temp=p["planet_temp"])
+                                     planet_temp=p["planet_temp"], clump_h=p["planet_clump_h"])
         disk = _DISKS[key]
     return Scene(outdir, p["model"], p["nbins"], nphot, log=log, bands=bands, disk=disk)
 
@@ -340,11 +343,14 @@ def z_over_r(phi_deg, inc=30.0):
 
 
 def orbit_schedule(n_frames, inc=30.0, slow_zr=0.15, slow_width=0.03, slow_factor=4.0,
-                   black_zr=0.09, fast_factor=4.0, high_zr=0.3, high_factor=2.0, phi0=90.0):
+                   black_zr=0.09, fast_factor=4.0, high_zr=0.3, high_factor=2.0, phi0=90.0, speed="surface"):
     """Orbit phase (deg) per frame for one full orbit starting at phi0 (top of the orbit).
-    The phase speed is ~ w(|z/R|): slowed by slow_factor around the illuminated surface layer
-    (|z/R| ~ slow_zr), sped up by fast_factor through the dark midplane (|z/R| < black_zr) and by
-    high_factor high above the disk (|z/R| > high_zr), where the view changes slowly."""
+    speed "surface": the phase speed is ~ w(|z/R|): slowed by slow_factor around the illuminated
+    surface layer (|z/R| ~ slow_zr), sped up by fast_factor through the dark midplane
+    (|z/R| < black_zr) and by high_factor high above the disk (|z/R| > high_zr), where the view
+    changes slowly. speed "uniform": constant phase speed (a Keplerian circular orbit)."""
+    if speed == "uniform":
+        return (phi0 + 360.0 * np.arange(n_frames) / n_frames) % 360.0
     ph = np.linspace(phi0, phi0 + 360.0, 72001)
     zr = np.abs(z_over_r(ph, inc))
     w = 1.0 - (1.0 - 1.0 / slow_factor) * np.exp(-0.5 * ((zr - slow_zr) / slow_width) ** 2)
@@ -381,7 +387,7 @@ def cmd_orbit(a, p, log=print):
     """Linear (pre-glare) XYZS + metadata per frame; existing frames are skipped (restartable)."""
     sc = make_scene(a.outdir, p, a.nphot, log=log, bands=p["bands"])
     os.makedirs(os.path.join(a.outdir, "frames"), exist_ok=True)
-    phis = orbit_schedule(a.n_frames, p["inc_deg"])
+    phis = orbit_schedule(a.n_frames, p["inc_deg"], speed=p["orbit_speed"])
     bdirs, birr, src = background_stars(sc.grid)
     log(f"background stars: {len(bdirs)} from {src}")
     lo, hi = (int(x) if x else None for x in a.frames.split(":"))
@@ -475,7 +481,7 @@ def cmd_orbit_ir(a, p, log=print):
     sc = make_scene(a.outdir, p, a.nphot, log=log, bands="ir")
     fdir = os.path.join(a.outdir, "frames_ir")
     os.makedirs(fdir, exist_ok=True)
-    phis = orbit_schedule(a.n_frames, p["inc_deg"])
+    phis = orbit_schedule(a.n_frames, p["inc_deg"], speed=p["orbit_speed"])
     bdirs, birr, src = background_stars_ir(sc.grid)
     log(f"bands (um): {[round(w / 1000, 2) for w in sc.grid.wl]}; background stars: {len(bdirs)} from {src}")
     lo, hi = (int(x) if x else None for x in a.frames.split(":"))

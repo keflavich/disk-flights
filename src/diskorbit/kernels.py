@@ -5,10 +5,12 @@ vector P = (rho0, r0, h0, beta, p, rmin, rmax) as DiskModel.params. Tables on un
 in ln r, mu = |z| / r (the model is mirror-symmetric about z = 0) and azimuth phi.
 
 Non-axisymmetric models multiply the axisymmetric density by delta(R, phi) (a surface-density
-perturbation, e.g. a planet's gap and spirals): rho = rho_axi(R, z) exp(LD(ln R, phi)), with LD
+perturbation, e.g. a planet's gap and spirals): rho = rho_axi(R, z) exp(LD[0](ln R, phi)), with LD
 tabulated on nodes ln R = PT[0] + i PT[1], phi = PT[2] + j PT[3] (periodic in phi); PT[4] = 0
-switches the perturbation off (axisymmetric models). Tables with a phi axis of length 1 are
-axisymmetric.
+switches the perturbation off (axisymmetric models). LD[1] is the planet's excess E over the
+gap level (linear, in units of rho_axi; LD[0] is then ln(delta - E)), which PT[5] > 0
+concentrates towards the midplane (see density3). Tables with a phi axis of
+length 1 are axisymmetric.
 """
 import numpy as np
 from numba import njit
@@ -26,16 +28,17 @@ def density(R, z, P):
 
 @njit(inline="always", cache=True)
 def pert_log(x, y, PT, LD):
-    """ln delta at (x, y); 0 outside the tabulated radii or when PT[4] == 0."""
+    """(ln(delta - E), clump excess E) at (x, y), from LD[0] and LD[1]; 0 outside the tabulated
+    radii or when PT[4] == 0."""
     if PT[4] == 0.0:
-        return 0.0
+        return 0.0, 0.0
     R = np.sqrt(x * x + y * y)
     if R <= 0.0:
-        return 0.0
+        return 0.0, 0.0
     fi = (np.log(R) - PT[0]) / PT[1]
-    nr, nphi = LD.shape[0], LD.shape[1]
+    nr, nphi = LD.shape[1], LD.shape[2]
     if fi < 0.0 or fi > nr - 1:
-        return 0.0
+        return 0.0, 0.0
     i = min(int(fi), nr - 2)
     ti = fi - i
     fj = (np.arctan2(y, x) - PT[2]) / PT[3]
@@ -44,15 +47,30 @@ def pert_log(x, y, PT, LD):
     tj = fj - j
     j = j % nphi
     j1 = (j + 1) % nphi
-    return ((1 - ti) * ((1 - tj) * LD[i, j] + tj * LD[i, j1])
-            + ti * ((1 - tj) * LD[i + 1, j] + tj * LD[i + 1, j1]))
+    a = (1 - ti) * (1 - tj)
+    b = (1 - ti) * tj
+    c = ti * (1 - tj)
+    e = ti * tj
+    return (a * LD[0, i, j] + b * LD[0, i, j1] + c * LD[0, i + 1, j] + e * LD[0, i + 1, j1],
+            a * LD[1, i, j] + b * LD[1, i, j1] + c * LD[1, i + 1, j] + e * LD[1, i + 1, j1])
 
 
 @njit(inline="always", cache=True)
 def density3(x, y, z, P, PT, LD):
-    d = density(np.sqrt(x * x + y * y), z, P)
+    """rho_axi * delta; with PT[5] = clump_h > 0 the planet's excess over the gap level (LD[1])
+    gets a Gaussian vertical profile of scale PT[5] h(R) at fixed surface density
+    (diskplanet.perturb): rho_axi * ((delta - E) + E f)."""
+    R = np.sqrt(x * x + y * y)
+    d = density(R, z, P)
     if d > 0.0 and PT[4] != 0.0:
-        d *= np.exp(pert_log(x, y, PT, LD))
+        lt, e = pert_log(x, y, PT, LD)
+        if PT[5] > 0.0 and e != 0.0:
+            k = PT[5]
+            q = z / (P[2] * (R / P[1]) ** P[3])
+            f = np.exp(-0.5 * q * q * (1.0 / (k * k) - 1.0)) / k
+            d *= np.exp(lt) + e * f
+        else:
+            d *= np.exp(lt)
     return d
 
 

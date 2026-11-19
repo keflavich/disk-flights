@@ -119,7 +119,7 @@ class DiskModel:
     @property
     def pert(self):
         """(PT, LD) density perturbation for the kernels; switched off."""
-        return np.zeros(5), np.zeros((2, 2))
+        return np.zeros(6), np.zeros((2, 2, 2))
 
     def cells(self):
         """Radiative-transfer grid for the thermal-emission packets: (r walls AU, theta walls,

@@ -106,7 +106,7 @@ def run(outdir, modes, p, n_frames, fps, nphot=2e7, log=print):
     sc = make_scene(outdir, p, nphot, log=log)
     sl = StarLayer(sc, p["width"], p["height"], p["fov_deg"])
     log(f"star layer: {len(sl.dirs)} stars from {sl.source}; psf sigma {sl.sig:.2f} px, halo {sl.rh:.2f} px")
-    phis = np.unwrap(np.radians(orbit_schedule(n_frames, p["inc_deg"])))
+    phis = np.unwrap(np.radians(orbit_schedule(n_frames, p["inc_deg"], speed=p.get("orbit_speed", "surface"))))
     phis = np.degrees(np.append(phis, phis[-1] + (phis[-1] - phis[-2])))
     for m in modes:
         os.makedirs(os.path.join(outdir, f"movie_{m}_stars"), exist_ok=True)
@@ -162,7 +162,7 @@ def run_ir(outdir, sets, p, n_frames, fps, nphot=2e7, log=print):
     sig, rh, rad_big, rad_small = max(0.75, 1.15 * s), max(1.6, 3.2 * s), int(np.ceil(40 * s)), int(np.ceil(10 * s))
     idx = {name: [bd.band_index(sc.grid, u) for u in bd.COLOUR_SETS[name]] for name in sets}
     log(f"IR star layer: {len(dirs)} stars from {source}; sets {sets}")
-    phis = np.unwrap(np.radians(orbit_schedule(n_frames, p["inc_deg"])))
+    phis = np.unwrap(np.radians(orbit_schedule(n_frames, p["inc_deg"], speed=p.get("orbit_speed", "surface"))))
     phis = np.degrees(np.append(phis, phis[-1] + (phis[-1] - phis[-2])))
     tags = {name: [f"ir_{name}", f"ir_{name}_mm"] for name in sets}
     for name in sets:

@@ -59,11 +59,12 @@ def _column3(rf, mu, phis, P, PT, LD, keep):
 
 class PlanetDisk(DiskModel):
     def __init__(self, name, sigma_npz=None, r_p=100.0, rtin3d=None, rtout3d=None, mc_nphi=32,
-                 nphi_tab=256, n_lnr_pert=1024, n_phi_pert=512, t_blend=(0.30, 0.40),
+                 nphi_tab=256, n_lnr_pert=1024, n_phi_pert=1024, t_blend=(0.30, 0.40),
                  planet_lsun=0.0, planet_temp=1200.0, phi_smooth=3, planet_zone=(0.25, 0.45),
-                 n_photons_ok=(1.0, 5.0)):
+                 n_photons_ok=(1.0, 5.0), clump_h=0.0):
         """sigma_npz None: delta = 1 everywhere (validation: must reproduce DiskModel).
-        planet_lsun > 0: the planet is also an isotropic blackbody point source at (r_p, 0, 0)."""
+        planet_lsun > 0: the planet is also an isotropic blackbody point source at (r_p, 0, 0).
+        clump_h > 0: the planet's overdensity has scale height clump_h * h (perturb.py)."""
         super().__init__(name)
         self.planet = None
         if planet_lsun > 0:
@@ -76,18 +77,19 @@ class PlanetDisk(DiskModel):
         self.phi_smooth, self.planet_zone, self.n_photons_ok = int(phi_smooth), planet_zone, n_photons_ok
         self.rtin3d, self.rtout3d = rtin3d, rtout3d
         if sigma_npz is not None:
-            self.perturbation = Perturbation.from_npz(sigma_npz, r_p)
+            self.perturbation = Perturbation.from_npz(sigma_npz, r_p, clump_h=clump_h)
             lnr0, dlnr, phi0, dphi, ld = self.perturbation.table(n_lnr_pert, n_phi_pert)
-            self._PT = np.array([lnr0 + np.log(self.r_p), dlnr, phi0, dphi, 1.0])
+            self._PT = np.array([lnr0 + np.log(self.r_p), dlnr, phi0, dphi, 1.0, float(clump_h)])
             self._LD = ld.astype(np.float64)
             stem = os.path.splitext(os.path.basename(sigma_npz))[0]
         else:
             self.perturbation = None
-            self._PT = np.array([0.0, 1.0, 0.0, 1.0, 1.0])  # switched on, all zeros: exercises the 3D path
-            self._LD = np.zeros((2, 2))
+            self._PT = np.array([0.0, 1.0, 0.0, 1.0, 1.0, 0.0])  # switched on, all zeros: exercises the 3D path
+            self._LD = np.zeros((2, 2, 2))
             stem = "flat"
         tsrc = os.path.splitext(os.path.basename(rtout3d))[0] if rtout3d else "Taxi"
-        self.tag = f"_{stem}_j{self.mc_nphi}" + (f"_pl{planet_lsun:g}" if self.planet else "")
+        self.tag = (f"_{stem}" + (f"_cx{clump_h:g}" if clump_h > 0 else "") + f"_j{self.mc_nphi}"
+                    + (f"_pl{planet_lsun:g}" if self.planet else ""))
         self.t_tag = f"_{tsrc}"  # the temperature only enters the IR (thermal) Monte Carlo
         self._tables = None
         self._T3 = None
@@ -104,7 +106,8 @@ class PlanetDisk(DiskModel):
         R = np.hypot(x, y)
         d = self.density(R, z)
         if self.perturbation is not None:
-            d = d * np.exp(self.perturbation(R, np.arctan2(y, x)))
+            P = self.params
+            d = d * self.perturbation.factor(R, np.arctan2(y, x), z, P[2] * (np.maximum(R, 1e-9) / P[1]) ** P[3])
         return d
 
     # ------------------------------------------------------------------ 3D Hyperion run
@@ -162,7 +165,9 @@ class PlanetDisk(DiskModel):
         # mu_top: above it the most opaque band's column to infinity (x max delta) < tau_top
         base0 = super().tables(n_r=400, n_mu=2000)
         k_max = self.optics_kmax()
-        dmax = float(np.exp(self._LD.max()))
+        k = self._PT[5]
+        dmax = float(np.max(np.exp(self._LD[0]) + self._LD[1] / k) if k > 0
+                     else np.exp(self._LD[0].max()))
         ninf = base0["ncol"][0, -1, :] * dmax * k_max
         if mu_top is None:
             hi = np.nonzero(ninf > tau_top)[0]

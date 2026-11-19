@@ -54,9 +54,12 @@ gap, from [PPDONet](https://github.com/andizq/PPDONet) (alpha = 1e-3, h0 = 0.051
 - `slurm/diskplanet_movie.sh {coorbit|lap} {vis|ir|post}` submits frame-range jobs and runs the
   develop / star layer / key steps.
 
-Known limitation: delta(R, phi) multiplies the density at every height, so the planet's
-overdensity extends through the disk surface layers and shows as a vertical streak through the
-planet in the movies.
+- `planet_clump_h` (`VARIANT=taper` in the driver): the planet's excess over the local gap level
+  gets a vertical scale height of `planet_clump_h` x the disk's, at fixed surface density. With the
+  default 0, delta(R, phi) multiplies the density at every height, so the planet's overdensity
+  extends through the disk surface layers and shows as a vertical streak through the planet.
+- `orbit_speed`: `surface` (default; slow at the lit surface layer, fast through the midplane) or
+  `uniform`. The driver's `incl45` and `polar` movies fly 45 and 90 deg inclined circular orbits.
 
 ## Night skies
 

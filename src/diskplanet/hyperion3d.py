@@ -32,10 +32,11 @@ def grid_rtin(name, geom="sp--s-i", root=GRID_ROOT):
 
 
 def build(src, out, pert, nphi, n_photons=None, n_iter=None, n_last=0, rho_floor=1e-30, pad=2,
-          planet=None, pda=True):
+          planet=None, pda=True, h_scale=None):
     """planet: None or dict(r_au, lum_lsun, temp_k): an isotropic blackbody point source at
     (r_au, 0, 0). pda: Hyperion's partial diffusion approximation (slow, iterative, single rank
-    for millions of cells)."""
+    for millions of cells). h_scale: callable R (au) -> disk scale height (au), needed when the
+    perturbation has a vertically concentrated clump (pert.clump_h > 0)."""
     with h5py.File(src, "r") as hs, h5py.File(out, "w") as ho:
         for k, v in hs.attrs.items():
             ho.attrs[k] = v
@@ -92,12 +93,15 @@ def build(src, out, pert, nphi, n_photons=None, n_iter=None, n_last=0, rho_floor
         pc = 0.5 * (p_w["p"][1:] + p_w["p"][:-1])
         pc = np.where(pc > np.pi, pc - 2 * np.pi, pc)
         R = rc[None, :] * np.sin(tc)[:, None]  # (nt, nr)
+        Z = rc[None, :] * np.cos(tc)[:, None]
+        H = h_scale(np.maximum(R, 1e-9)) if pert.clump_h > 0 else None
         gq = ho.create_group("Grid/Quantities")
         for k, v in hs["Grid/Quantities"].attrs.items():
             gq.attrs[k] = v
         d = gq.create_dataset("density", shape=(1, nphi, len(tc), len(rc)), dtype="f4")
         for j, ph in enumerate(pc):
-            d[0, j] = (rho * np.exp(pert(R, ph))).astype("f4")
+            fac = pert.factor(R, ph, Z, H) if pert.clump_h > 0 else np.exp(pert(R, ph))
+            d[0, j] = (rho * fac).astype("f4")
         d.attrs["geometry"] = np.bytes_(geo_hash)
         m_axi = float(np.sum(rho * _vol(r_w["r"], t_w["t"])))
         m_3d = float(sum(np.sum(d[0, j] * _vol(r_w["r"], t_w["t"])) for j in range(nphi)) / nphi)
@@ -126,11 +130,18 @@ def main():
     b.add_argument("--planet-lsun", type=float, default=0.0, help="planet point source luminosity (0: none)")
     b.add_argument("--planet-temp", type=float, default=1200.0)
     b.add_argument("--no-pda", action="store_true")
+    b.add_argument("--clump-h", type=float, default=0.0,
+                   help="planet clump scale height / disk scale height (0: delta at every height)")
     a = ap.parse_args()
-    pert = Perturbation.from_npz(a.sigma, a.rp)
+    pert = Perturbation.from_npz(a.sigma, a.rp, clump_h=a.clump_h)
+    h_scale = None
+    if a.clump_h > 0:
+        from diskorbit.model import DiskModel
+        m = DiskModel(a.model)
+        h_scale = lambda R: m.h0 * (R / m.r0) ** m.beta  # noqa: E731
     planet = dict(r_au=a.rp, lum_lsun=a.planet_lsun, temp_k=a.planet_temp) if a.planet_lsun > 0 else None
     info = build(grid_rtin(a.model), a.out, pert, a.nphi, None if a.photons is None else int(a.photons), a.iter,
-                 planet=planet, pda=not a.no_pda)
+                 planet=planet, pda=not a.no_pda, h_scale=h_scale)
     print(f"wrote {a.out}: {info}")
 
 

@@ -54,7 +54,9 @@ class Inset:
         self.pert = None
         if p.get("planet_sigma"):
             from diskplanet.perturb import Perturbation
-            self.pert = Perturbation.from_npz(p["planet_sigma"], p["planet_rp"])
+            self.pert = Perturbation.from_npz(p["planet_sigma"], p["planet_rp"], clump_h=p.get("planet_clump_h", 0.0))
+            self.h_au = m.h0 * (np.maximum(np.abs(self.X), 1e-9) / m.r0) ** m.beta
+            self.Z = Z
         self.vmax = float(np.nanpercentile(self.logrho_axi, 99.5))
         self.vmin = self.vmax - float(p.get("key_dex", 7.0))
         self.logrho = self._mask(self.logrho_axi)
@@ -71,7 +73,8 @@ class Inset:
             return self.logrho
         ph = np.where(self.X >= 0, phi_model, phi_model + np.pi)
         ph = np.angle(np.exp(1j * ph))
-        return self._mask(self.logrho_axi + self.pert(np.abs(self.X), ph) / np.log(10.0))
+        f = self.pert.factor(np.abs(self.X), ph, self.Z, self.h_au)
+        return self._mask(self.logrho_axi + np.log10(np.maximum(f, 1e-300)))
 
     def draw(self, pos, fwd, psi=0.0):
         """psi: pattern azimuth (rad, inertial), see render.pattern_angle."""
@@ -152,7 +155,7 @@ def make_insets(outdir, p, n_frames, nproc, log=print):
     from multiprocessing import Pool
     keydir = os.path.join(outdir, "key")
     os.makedirs(keydir, exist_ok=True)
-    phis = orbit_schedule(n_frames, p["inc_deg"])
+    phis = orbit_schedule(n_frames, p["inc_deg"], speed=p.get("orbit_speed", "surface"))
     t0 = time.time()
     with Pool(nproc) as pool:
         for k, _ in enumerate(pool.imap_unordered(_worker, [(i, phis[i], keydir, p) for i in range(n_frames)], chunksize=8)):
