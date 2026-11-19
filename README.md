@@ -60,6 +60,11 @@ gap, from [PPDONet](https://github.com/andizq/PPDONet) (alpha = 1e-3, h0 = 0.051
   extends through the disk surface layers and shows as a vertical streak through the planet.
 - `orbit_speed`: `surface` (default; slow at the lit surface layer, fast through the midplane) or
   `uniform`. The driver's `incl45` and `polar` movies fly 45 and 90 deg inclined circular orbits.
+- `diskplanet/spiral.py` adds global m-armed logarithmic spiral arms (a stand-in for arms driven
+  by an outer companion or gravitational instability, not by the planet) to a PPDONet surface
+  density, keeping the ring-averaged Sigma(r). `VARIANT=spiral` in the driver = the taper setup
+  plus two 15 deg pitch arms around 160 au with 0.25 dex cosine amplitude, rotating rigidly with
+  the planet.
 
 ## Night skies
 

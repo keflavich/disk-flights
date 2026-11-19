@@ -6,6 +6,7 @@
 #   slurm/diskplanet_movie.sh lap ir 6           # IR frames (needs the 3D Hyperion temperature)
 #   slurm/diskplanet_movie.sh coorbit post       # develop, stars, key (after vis and ir frames)
 #   VARIANT=taper slurm/diskplanet_movie.sh ...  # planet clump confined to 0.5 disk scale heights
+#   VARIANT=spiral slurm/diskplanet_movie.sh ... # taper + global spiral arms (diskplanet/spiral.py)
 #
 # Movies: coorbit = camera trails the planet by 30 deg of orbital phase (same period, pattern
 # co-rotates); lap = planet frozen at azimuth 150 deg, the camera laps the gap once (both on a
@@ -20,10 +21,14 @@ ROOT=/orange/adamginsburg/gc/visualization
 VARIANT=${VARIANT:-}
 SFX=; HYP=planet_q1e-3_n128; CLUMP=0.0; SPEED=surface
 if [ "$VARIANT" = taper ]; then SFX=_taper; HYP=planet_q1e-3_n128_cx0.5; CLUMP=0.5; SPEED=uniform; fi
+# spiral = taper + two global log-spiral arms in the outer disk (diskplanet/spiral.py: 15 deg pitch,
+# envelope 160 +- 35 au, 0.25 dex cosine amplitude, Sigma(r) unchanged), rigid with the planet
+SIGMA=sigma_q1e-3_a1e-3_h0.051
+if [ "$VARIANT" = spiral ]; then SFX=_spiral; SIGMA=${SIGMA}_sp2; HYP=planet_q1e-3_n128_sp2_cx0.5; CLUMP=0.5; SPEED=uniform; fi
 OUT=$ROOT/renders/diskplanet/$MOVIE$SFX
 MCDIR=$ROOT/renders/diskplanet/mc
 NFR=1800
-COMMON=(--set a_au=100 --set inc_deg=15 --set planet_sigma=$ROOT/renders/diskplanet/sigma_q1e-3_a1e-3_h0.051.npz
+COMMON=(--set a_au=100 --set inc_deg=15 --set planet_sigma=$ROOT/renders/diskplanet/$SIGMA.npz
         --set planet_lsun=1e-4 --set mc_nphi=32 --set key_L_au=125 --set key_dex=5
         --set planet_clump_h=$CLUMP --set orbit_speed=$SPEED)
 # 3D Hyperion temperature: only the IR frames need it (optical thermal emission comes from the
