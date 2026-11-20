@@ -25,7 +25,7 @@ import matplotlib as mpl
 mpl.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-from .render import DEFAULTS, movie_prefix, pattern_angle, orbit_state, camera_forward, orbit_schedule, look_basis  # noqa: E402
+from .render import DEFAULTS, movie_prefix, pattern_angle, look_basis, CameraTrack  # noqa: E402
 
 OUTDIR = "/orange/adamginsburg/gc/visualization/renders/diskorbit"
 REF_W = 1600  # the flythrough key is 360 px wide on 1600 px frames; scale with frame width
@@ -41,27 +41,32 @@ class Inset:
         self.size = size or int(round(360 * self.s))
         self.R = p["a_au"]
         self.vh = np.degrees(np.arctan(np.tan(np.radians(p["fov_deg"]) / 2) * p["height"] / p["width"]))
-        m = DiskModel(p["model"])
+        m = self.m = DiskModel(p["model"])
         self.h0, self.r0, self.beta, self.rmax = m.h0, m.r0, m.beta, m.rmax
-        self.L = float(p.get("key_L_au", L_AU))
-        n = 600
-        g = np.linspace(-self.L, self.L, n)
-        self.X, Z = np.meshgrid(g, g[::-1])
-        rho = m.density(np.abs(self.X), Z)
-        self.logrho_axi = np.where(rho > 0, np.log10(np.maximum(rho, 1e-300)), np.nan)
+        self.L0 = float(p.get("key_L_au", L_AU))
         # non-axisymmetric (planet) model: the slice depends on the camera's azimuth in the
         # pattern frame; the colour stretch is fixed by the axisymmetric slice
         self.pert = None
         if p.get("planet_sigma"):
             from diskplanet.perturb import Perturbation
             self.pert = Perturbation.from_npz(p["planet_sigma"], p["planet_rp"], clump_h=p.get("planet_clump_h", 0.0))
-            self.h_au = m.h0 * (np.maximum(np.abs(self.X), 1e-9) / m.r0) ** m.beta
-            self.Z = Z
+        self._set_extent(self.L0)
         self.vmax = float(np.nanpercentile(self.logrho_axi, 99.5))
         self.vmin = self.vmax - float(p.get("key_dex", 7.0))
         self.logrho = self._mask(self.logrho_axi)
         # theta range covered by the orbit (inclined circle: |latitude| <= inc)
         self.th_lo, self.th_hi = 90.0 - p["inc_deg"], 90.0 + p["inc_deg"]
+
+    def _set_extent(self, L, n=600):
+        """Slice grid of half-width L au (the key zooms out while the camera is far away)."""
+        self.L = L
+        g = np.linspace(-L, L, n)
+        self.X, self.Z = np.meshgrid(g, g[::-1])
+        rho = self.m.density(np.abs(self.X), self.Z)
+        self.logrho_axi = np.where(rho > 0, np.log10(np.maximum(rho, 1e-300)), np.nan)
+        self.h_au = self.h0 * (np.maximum(np.abs(self.X), 1e-9) / self.r0) ** self.beta
+        if hasattr(self, "vmin"):
+            self.logrho = self._mask(self.logrho_axi)
 
     def _mask(self, lr):
         return np.where(lr < self.vmin, np.nan, lr)
@@ -76,9 +81,14 @@ class Inset:
         f = self.pert.factor(np.abs(self.X), ph, self.Z, self.h_au)
         return self._mask(self.logrho_axi + np.log10(np.maximum(f, 1e-300)))
 
-    def draw(self, pos, fwd, psi=0.0):
-        """psi: pattern azimuth (rad, inertial), see render.pattern_angle."""
+    def draw(self, pos, fwd, psi=0.0, up=None):
+        """psi: pattern azimuth (rad, inertial), see render.pattern_angle; up: the camera's up
+        vector (default: the z-axis reference of render.look_basis)."""
         s = self.s
+        rcam = float(np.linalg.norm(pos))
+        L = max(self.L0, 1.15 * rcam)
+        if abs(L - self.L) > 1e-9 * L:
+            self._set_extent(L)
         img_slice = self.slice_at(np.arctan2(pos[1], pos[0]) - psi)
         W_px, FOOT = self.size, int(round(34 * s))
         H_px = W_px + FOOT
@@ -101,27 +111,33 @@ class Inset:
         # field of view: wedge whose edges have the true elevation (above the disk plane) of the
         # top- and bottom-centre rays, drawn on the side the camera looks toward (inward/outward)
         cR, cz = np.hypot(pos[0], pos[1]), pos[2]
-        f, _, u = look_basis(fwd)
+        f, _, u = look_basis(fwd) if up is None else look_basis(fwd, up)
         a = np.radians(self.vh)
-        Rhat = np.array([pos[0], pos[1], 0.0]) / cR
+        on_axis = cR < 1e-6 * rcam
+        # on the axis the slice plane is the one containing the view direction
+        Rhat = np.array([f[0], f[1], 0.0]) if on_axis else np.array([pos[0], pos[1], 0.0])
+        Rhat = Rhat / (np.linalg.norm(Rhat) or 1.0)
         side = np.sign(f @ Rhat) or 1.0
         W = 3 * L
         edges = []
         for d in (np.cos(a) * f + np.sin(a) * u, np.cos(a) * f - np.sin(a) * u):
             dz = float(np.clip(d[2], -1, 1))
-            edges.append((cR + W * side * np.sqrt(1 - dz * dz), cz + W * dz))
+            sd = (np.sign(d @ Rhat) or 1.0) if on_axis else side
+            edges.append((cR + W * sd * np.sqrt(1 - dz * dz), cz + W * dz))
         (tR, tz), (bR, bz) = edges
         ax.fill([cR, tR, bR], [cz, tz, bz], color="#ffe14a", alpha=0.18, lw=0)
         ax.plot([cR, tR], [cz, tz], color="#ffe14a", lw=1.6)
         ax.plot([cR, bR], [cz, bz], color="#ffe14a", lw=0.8, ls=(0, (3, 2)))
         ax.plot([0], [0], marker="*", color="white", ms=9 * s, mec="k", mew=0.5)
         ax.plot([cR], [cz], marker="o", color="#ffe14a", ms=7 * s, mec="k", mew=0.8)
-        th = np.degrees(np.arccos(cz / np.linalg.norm(pos)))
-        fig.text(0.04, 8 * s / H_px, rf"$r_{{\rm orbit}}$ = {self.R:g} au      $\theta$ = {th:.1f}°",
+        th = np.degrees(np.arccos(cz / rcam))
+        where = rf"$r_{{\rm orbit}}$ = {self.R:g} au" if rcam < 1.005 * self.R else f"d = {rcam:.0f} au"
+        fig.text(0.04, 8 * s / H_px, rf"{where}      $\theta$ = {th:.1f}°",
                  va="bottom", color="white", fontsize=13 * s, family="DejaVu Sans")
+        bar = max([b for b in (SCALE_AU, 100.0, 200.0, 500.0, 1000.0) if b <= max(0.4 * L, SCALE_AU)])
         x0, y0 = -0.94 * L, -0.92 * L
-        ax.plot([x0, x0 + SCALE_AU], [y0, y0], color="white", lw=2)
-        ax.text(x0, y0 + 0.03 * L, f"{SCALE_AU:g} au", ha="left", va="bottom", fontsize=11 * s, color="white")
+        ax.plot([x0, x0 + bar], [y0, y0], color="white", lw=2)
+        ax.text(x0, y0 + 0.03 * L, f"{bar:g} au", ha="left", va="bottom", fontsize=11 * s, color="white")
         ax.set_xlim(-L, L)
         ax.set_ylim(-L, L)
         ax.set_xticks([])
@@ -139,14 +155,15 @@ _W = {}
 
 def _worker(args):
     import imageio.v3 as iio
-    i, phi, keydir, p = args
+    i, n_frames, keydir, p = args
     out = os.path.join(keydir, f"f{i:05d}.png")
     if os.path.exists(out):
         return i, None
     if "inset" not in _W:
         _W["inset"] = Inset(p)
-    pos, vel = orbit_state(phi, p["a_au"], p["inc_deg"])
-    img, th = _W["inset"].draw(pos, camera_forward(pos, vel, p["toward_star_deg"]), pattern_angle(p, phi))
+        _W["track"] = CameraTrack(p, n_frames)
+    pos, fwd, up, phi = _W["track"].state(i)
+    img, th = _W["inset"].draw(pos, fwd, pattern_angle(p, phi), up)
     iio.imwrite(out, img)
     return i, th
 
@@ -155,10 +172,9 @@ def make_insets(outdir, p, n_frames, nproc, log=print):
     from multiprocessing import Pool
     keydir = os.path.join(outdir, "key")
     os.makedirs(keydir, exist_ok=True)
-    phis = orbit_schedule(n_frames, p["inc_deg"], speed=p.get("orbit_speed", "surface"))
     t0 = time.time()
     with Pool(nproc) as pool:
-        for k, _ in enumerate(pool.imap_unordered(_worker, [(i, phis[i], keydir, p) for i in range(n_frames)], chunksize=8)):
+        for k, _ in enumerate(pool.imap_unordered(_worker, [(i, n_frames, keydir, p) for i in range(n_frames)], chunksize=8)):
             if k % 300 == 0:
                 log(f"inset {k}/{n_frames} ({time.time() - t0:.0f} s)")
     return keydir

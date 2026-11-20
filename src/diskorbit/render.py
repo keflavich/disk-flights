@@ -38,6 +38,15 @@ DEFAULTS = dict(model="dIULECee", bands="vis", nbins=20, a_au=30.0, inc_deg=30.0
                 # orbit phase speed: "surface" (slow at the lit surface layer, fast through the
                 # midplane) or "uniform"
                 orbit_speed="surface",
+                camera_up="z",
+                # intro before the orbit (frames): hold at intro_from_au on the ray from the star
+                # through the orbit's start, fly in to a_au, then pan from the star to the orbit's
+                # view; intro_from_au = 0 -> no intro
+                intro_from_au=0.0, intro_hold=0, intro_fly=0, intro_pan=0,
+                # intro_star: draw the star point during the intro (its glare hides the face-on
+                # disk); intro_key: exposure during the intro, x the frame's 99.5th-percentile
+                # luminance (the eye adaptation of a mostly dark sky would blow the disk out)
+                intro_star=0, intro_key=0.03,
                 # pattern azimuth: "fixed" -> planet at pattern_deg (inertial); "coorbit" -> the
                 # planet leads the camera's orbital phase by pattern_deg (same period)
                 pattern_mode="fixed", pattern_deg=0.0,
@@ -184,6 +193,15 @@ def look_basis(fwd, up_ref=(0.0, 0.0, 1.0)):
     return f, rt, np.cross(rt, f)
 
 
+def view_up(p, pos):
+    """Reference "up" for the camera basis. "z": the disk axis (legacy; the roll flips by 180 deg
+    when the view passes the disk axis, which steep orbits do); "radial": away from the star,
+    which stays well defined on any orbit because the camera never looks along its radius."""
+    if p.get("camera_up", "z") == "radial":
+        return np.asarray(pos, float) / np.linalg.norm(pos)
+    return np.array([0.0, 0.0, 1.0])
+
+
 def make_view(fwd, width, height, fov_deg, up_ref=(0.0, 0.0, 1.0)):
     """nightsky View (perspective) whose directions are in the disk frame."""
     v = vw.View("perspective", width, height, azimuth_deg=0.0, pitch_deg=0.0, fov_deg=fov_deg)
@@ -206,6 +224,65 @@ def camera_forward(pos, vel, toward_star_deg):
     return f / np.linalg.norm(f)
 
 
+def _rotate(axis, ang, v):
+    """Rodrigues rotation of v about the unit vector axis by ang (rad)."""
+    c, s = np.cos(ang), np.sin(ang)
+    return v * c + np.cross(axis, v) * s + axis * (axis @ v) * (1 - c)
+
+
+def _smooth(u):
+    u = min(max(u, 0.0), 1.0)
+    return u * u * (3 - 2 * u)
+
+
+def intro_length(p):
+    if p.get("intro_from_au", 0.0) <= 0:
+        return 0
+    return int(p["intro_hold"]) + int(p["intro_fly"]) + int(p["intro_pan"])
+
+
+class CameraTrack:
+    """Camera pose at (fractional) movie frame t: the optional intro, then one orbit over the
+    remaining frames (orbit_schedule). state(t) -> (pos, fwd, up, orbit phase deg)."""
+
+    def __init__(self, p, n_frames):
+        self.p = p
+        self.n_intro = intro_length(p)
+        self.n_orbit = n_frames - self.n_intro
+        ph = np.degrees(np.unwrap(np.radians(orbit_schedule(self.n_orbit, p["inc_deg"], speed=p["orbit_speed"]))))
+        self.ph = np.append(ph, 2 * ph[-1] - ph[-2])  # one extra step for sub-frame interpolation
+        pos0, vel0 = orbit_state(self.ph[0], p["a_au"], p["inc_deg"])
+        self.f0 = camera_forward(pos0, vel0, p["toward_star_deg"])
+        self.up0 = look_basis(self.f0, view_up(p, pos0))[2]
+        self.rhat0 = pos0 / np.linalg.norm(pos0)
+        # pan: rotate the view from the star (-rhat0) to f0 about their common normal
+        self.fs = -self.rhat0
+        self.ang = float(np.arccos(np.clip(self.fs @ self.f0, -1, 1)))
+        ax = np.cross(self.fs, self.f0)
+        self.axis = ax / np.linalg.norm(ax)
+        self.ups = _rotate(self.axis, -self.ang, self.up0)
+
+    def phase(self, t):
+        j = t - self.n_intro
+        if j <= 0:
+            return float(self.ph[0])
+        return float(np.interp(j, np.arange(len(self.ph)), self.ph))
+
+    def state(self, t):
+        p = self.p
+        if t >= self.n_intro:
+            ph = self.phase(t)
+            pos, vel = orbit_state(ph, p["a_au"], p["inc_deg"])
+            fwd = camera_forward(pos, vel, p["toward_star_deg"])
+            return pos, fwd, look_basis(fwd, view_up(p, pos))[2], ph
+        hold, fly = int(p["intro_hold"]), int(p["intro_fly"])
+        u_fly = (t - hold) / max(fly, 1)
+        u_pan = (t - hold - fly) / max(int(p["intro_pan"]), 1)
+        d = float(np.exp(np.log(p["intro_from_au"]) + (np.log(p["a_au"]) - np.log(p["intro_from_au"])) * _smooth(u_fly)))
+        a = self.ang * _smooth(u_pan)
+        return d * self.rhat0, _rotate(self.axis, a, self.fs), _rotate(self.axis, a, self.ups), float(self.ph[0])
+
+
 def phi_for_height(zr, a=30.0, inc=30.0):
     """Orbit phase (deg, first quarter) where z / R = zr."""
     ph = np.linspace(0, 90, 90001)
@@ -214,8 +291,8 @@ def phi_for_height(zr, a=30.0, inc=30.0):
     return float(np.interp(zr, zr_s, ph[::100]))
 
 
-def render_frame(scene, pos, fwd, p, star=True):
-    v = make_view(fwd, p["width"], p["height"], p["fov_deg"])
+def render_frame(scene, pos, fwd, p, star=True, up=None):
+    v = make_view(fwd, p["width"], p["height"], p["fov_deg"], up_ref=view_up(p, pos) if up is None else up)
     t0 = time.time()
     img, col = scene.render(pos, v.dirs, p["frac"], p["dtau_max"], p["tau_stop"])
     secs = time.time() - t0
@@ -387,7 +464,7 @@ def cmd_orbit(a, p, log=print):
     """Linear (pre-glare) XYZS + metadata per frame; existing frames are skipped (restartable)."""
     sc = make_scene(a.outdir, p, a.nphot, log=log, bands=p["bands"])
     os.makedirs(os.path.join(a.outdir, "frames"), exist_ok=True)
-    phis = orbit_schedule(a.n_frames, p["inc_deg"], speed=p["orbit_speed"])
+    track = CameraTrack(p, a.n_frames)
     bdirs, birr, src = background_stars(sc.grid)
     log(f"background stars: {len(bdirs)} from {src}")
     lo, hi = (int(x) if x else None for x in a.frames.split(":"))
@@ -396,23 +473,25 @@ def cmd_orbit(a, p, log=print):
         if os.path.exists(base + ".json"):
             continue
         t0 = time.time()
-        pos, vel = orbit_state(phis[i], p["a_au"], p["inc_deg"])
-        sc.pattern_angle = pattern_angle(p, phis[i])
-        fwd = camera_forward(pos, vel, p["toward_star_deg"])
-        v, img, col, info = render_frame(sc, pos, fwd, p, star=False)
+        pos, fwd, up, ph = track.state(i)
+        sc.pattern_angle = pattern_angle(p, ph)
+        v, img, col, info = render_frame(sc, pos, fwd, p, star=False, up=up)
         bg = img.copy()
         # background stars, attenuated by the disk column toward each of them
         _, bcol = sc.render(pos, bdirs[:, None, :], p["frac"], p["dtau_max"], p["tau_stop"])
         b_att = birr * np.exp(-np.outer(bcol[:, 0], sc.opt["k"]))
         _, sinfo = camera.deposit_points_eye(img, v, bdirs, b_att, POINTS, sc.grid, bg)
         irr, _ = sc.star_irradiance(pos)
-        info["star_in_frame"] = camera.deposit_points(img, v, (-pos / np.linalg.norm(pos))[None], irr[None], POINTS, sc.grid)
+        info["star_in_frame"] = 0
+        if i >= track.n_intro or p["intro_star"]:
+            info["star_in_frame"] = camera.deposit_points(img, v, (-pos / np.linalg.norm(pos))[None], irr[None], POINTS, sc.grid)
         info["planet_in_frame"], info["planet_column"] = deposit_planet(sc, img, v, pos)
         xyzs = camera.to_xyzs(img, sc.grid).astype(np.float32)
         xyzs[~v.valid] = 0
         ad = camera.eye_adaptation(xyzs, v.valid, EYE)
-        meta = {"frame": i, "phi_deg": float(phis[i]), "pos_au": pos.tolist(), "z_over_R": float(pos[2] / np.hypot(pos[0], pos[1])),
+        meta = {"frame": i, "phi_deg": ph, "pos_au": pos.tolist(), "fwd": fwd.tolist(), "up": up.tolist(), "z_over_R": float(pos[2] / np.hypot(pos[0], pos[1])),
                 "La_cd_m2": ad["La_cd_m2"], "median_Y_cd_m2": float(np.median(xyzs[..., 1])),
+                "p995_Y_cd_m2": float(np.percentile(xyzs[..., 1][v.valid], 99.5)),
                 "bg_stars_in_frame": sinfo["n_points_in_frame"], "bg_stars_visible": sinfo["n_points_visible"],
                 "star_tau_V": float(sc.star_irradiance(pos)[1] * sc.k_v), **info}
         with open(base + ".tmp.npz", "wb") as f:
@@ -421,7 +500,7 @@ def cmd_orbit(a, p, log=print):
         meta["frame_s"] = time.time() - t0
         with open(base + ".json", "w") as f:
             json.dump(meta, f)
-        log(f"frame {i:5d} phi {phis[i]:7.2f} z/R {meta['z_over_R']:+.3f} La {meta['La_cd_m2']:.3g} "
+        log(f"frame {i:5d} phi {ph:7.2f} z/R {meta['z_over_R']:+.3f} La {meta['La_cd_m2']:.3g} "
             f"star {info['star_in_frame']} bg {sinfo['n_points_visible']:.0f}/{sinfo['n_points_in_frame']} "
             f"render {info['render_s']:.1f} s total {meta['frame_s']:.1f} s")
 
@@ -481,7 +560,7 @@ def cmd_orbit_ir(a, p, log=print):
     sc = make_scene(a.outdir, p, a.nphot, log=log, bands="ir")
     fdir = os.path.join(a.outdir, "frames_ir")
     os.makedirs(fdir, exist_ok=True)
-    phis = orbit_schedule(a.n_frames, p["inc_deg"], speed=p["orbit_speed"])
+    track = CameraTrack(p, a.n_frames)
     bdirs, birr, src = background_stars_ir(sc.grid)
     log(f"bands (um): {[round(w / 1000, 2) for w in sc.grid.wl]}; background stars: {len(bdirs)} from {src}")
     lo, hi = (int(x) if x else None for x in a.frames.split(":"))
@@ -493,18 +572,19 @@ def cmd_orbit_ir(a, p, log=print):
         if os.path.exists(base + ".json"):
             continue
         t0 = time.time()
-        pos, vel = orbit_state(phis[i], p["a_au"], p["inc_deg"])
-        sc.pattern_angle = pattern_angle(p, phis[i])
-        fwd = camera_forward(pos, vel, p["toward_star_deg"])
-        v, img, col, info = render_frame(sc, pos, fwd, p, star=False)
+        pos, fwd, up, ph = track.state(i)
+        sc.pattern_angle = pattern_angle(p, ph)
+        v, img, col, info = render_frame(sc, pos, fwd, p, star=False, up=up)
         _, bcol = sc.render(pos, bdirs[:, None, :], p["frac"], p["dtau_max"], p["tau_stop"])
         nbg = deposit_ir(img, v, bdirs, birr * np.exp(-np.outer(bcol[:, 0], sc.opt["k"])), sc.grid)
         irr, ncol = sc.star_irradiance(pos)
-        info["star_in_frame"] = deposit_ir(img, v, (-pos / np.linalg.norm(pos))[None], irr[None], sc.grid)
+        info["star_in_frame"] = 0
+        if i >= track.n_intro or p["intro_star"]:
+            info["star_in_frame"] = deposit_ir(img, v, (-pos / np.linalg.norm(pos))[None], irr[None], sc.grid)
         info["planet_in_frame"], info["planet_column"] = deposit_planet(sc, img, v, pos, ir=True)
         nuinu = (img * sc.grid.wl).astype(np.float32)
         nuinu[~v.valid] = 0
-        meta = {"frame": i, "phi_deg": float(phis[i]), "pos_au": pos.tolist(), "z_over_R": float(pos[2] / np.hypot(pos[0], pos[1])),
+        meta = {"frame": i, "phi_deg": ph, "pos_au": pos.tolist(), "fwd": fwd.tolist(), "up": up.tolist(), "z_over_R": float(pos[2] / np.hypot(pos[0], pos[1])),
                 "star_tau_V": float(ncol * sc.k_v), "bg_stars_in_frame": nbg, "bands": band_stats(nuinu, v.valid), **info}
         with open(base + ".tmp.npz", "wb") as f:
             np.savez_compressed(f, nuinu_bf16=to_bf16(nuinu))
@@ -512,7 +592,7 @@ def cmd_orbit_ir(a, p, log=print):
         meta["frame_s"] = time.time() - t0
         with open(base + ".json", "w") as f:
             json.dump(meta, f)
-        log(f"ir frame {i:5d} phi {phis[i]:7.2f} z/R {meta['z_over_R']:+.3f} render {info['render_s']:.1f} s total {meta['frame_s']:.1f} s")
+        log(f"ir frame {i:5d} phi {ph:7.2f} z/R {meta['z_over_R']:+.3f} render {info['render_s']:.1f} s total {meta['frame_s']:.1f} s")
 
 
 MM_RGB = np.array([0.1, 0.9, 1.0])  # overlay colour of the 1.3 mm emission (cyan)
@@ -621,6 +701,19 @@ def _develop_one(args):
     return i
 
 
+def intro_exposure(p, metas, la):
+    """Adaptation levels with the intro's frames exposed on their bright pixels
+    (intro_key x 99.5th-percentile luminance), blended (in log) back to la over the pan."""
+    la = np.array(la, float)
+    n = intro_length(p)
+    hf = int(p["intro_hold"]) + int(p["intro_fly"])
+    for i in range(min(n, len(la))):
+        w = 1.0 - _smooth((i - hf) / max(int(p["intro_pan"]), 1))
+        bright = p["intro_key"] * metas[i]["p995_Y_cd_m2"]
+        la[i] = np.exp((1 - w) * np.log(la[i]) + w * np.log(max(bright, 1e-12)))
+    return la
+
+
 def cmd_develop(a, p, log=print):
     """PNG frames + MP4. eye: adaptation smoothed in movie time (light / dark time constants in
     movie seconds); auto: photopic per-frame adaptation to the frame median (diagnostic)."""
@@ -633,10 +726,10 @@ def cmd_develop(a, p, log=print):
     t_s = np.arange(a.n_frames) / a.fps
     for mode in a.modes:
         if mode == "eye":
-            la = animate.smooth_log_la(t_s / 3600.0, [m["La_cd_m2"] for m in metas],
-                                       a.tau_light_s / 60.0, a.tau_dark_s / 60.0, periodic=False)
+            la = intro_exposure(p, metas, [m["La_cd_m2"] for m in metas])
+            la = animate.smooth_log_la(t_s / 3600.0, la, a.tau_light_s / 60.0, a.tau_dark_s / 60.0, periodic=False)
         else:
-            la = np.array([max(m["median_Y_cd_m2"], 1e-9) for m in metas])
+            la = intro_exposure(p, metas, [max(m["median_Y_cd_m2"], 1e-9) for m in metas])
         os.makedirs(os.path.join(a.outdir, f"movie_{mode}"), exist_ok=True)
         jobs = []
         for i, m in enumerate(metas):

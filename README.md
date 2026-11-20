@@ -65,6 +65,16 @@ gap, from [PPDONet](https://github.com/andizq/PPDONet) (alpha = 1e-3, h0 = 0.051
   density, keeping the ring-averaged Sigma(r). `VARIANT=spiral` in the driver = the taper setup
   plus two 15 deg pitch arms around 160 au with 0.25 dex cosine amplitude, rotating rigidly with
   the planet.
+- `camera_up`: `z` (default) keeps the image horizon parallel to the midplane; the picture rolls
+  by 180 deg in one frame whenever the view passes the disk axis (the `polar` movie does, twice).
+  `radial` takes "up" as away from the star, which stays continuous on any orbit.
+- Intro (`intro_from_au`, `intro_hold`, `intro_fly`, `intro_pan`, in frames): hold far out on the
+  ray from the star through the orbit's start, fly in (log-eased) to `a_au`, then pan from the
+  star to the orbit's view; the orbit uses the remaining frames (`diskorbit.render.CameraTrack`).
+  During the intro the star point is left out (`intro_star=0`; its glare hides the face-on disk)
+  and the eye exposure follows the bright pixels (`intro_key` x the 99.5th-percentile luminance),
+  blending back to the normal adaptation over the pan. The driver's `polarfly` movie = `polar` with
+  `camera_up=radial` and a 1 s hold at 1000 au, 10 s dive and 4 s pan (2250 frames).
 
 ## Night skies
 

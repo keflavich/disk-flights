@@ -11,7 +11,9 @@
 # Movies: coorbit = camera trails the planet by 30 deg of orbital phase (same period, pattern
 # co-rotates); lap = planet frozen at azimuth 150 deg, the camera laps the gap once (both on a
 # 15 deg inclined orbit); incl45 / polar = 45 / 90 deg inclined circular orbits past the frozen
-# planet.
+# planet; polarfly = polar with the camera's up kept away from the star (no roll flip over the
+# pole) and a 15 s intro: hold at 1000 au over the pole, dive to 100 au, pan from the star to the
+# orbit view (450 extra frames; FRAMES=0:450 renders only those).
 set -e
 MOVIE=$1; WHAT=$2; NJOBS=${3:-6}
 ROOT=/orange/adamginsburg/gc/visualization
@@ -28,6 +30,7 @@ if [ "$VARIANT" = spiral ]; then SFX=_spiral; SIGMA=${SIGMA}_sp2; HYP=planet_q1e
 OUT=$ROOT/renders/diskplanet/$MOVIE$SFX
 MCDIR=$ROOT/renders/diskplanet/mc
 NFR=1800
+FLY=(--set camera_up=radial --set intro_from_au=1000 --set intro_hold=30 --set intro_fly=300 --set intro_pan=120)
 COMMON=(--set a_au=100 --set inc_deg=15 --set planet_sigma=$ROOT/renders/diskplanet/$SIGMA.npz
         --set planet_lsun=1e-4 --set mc_nphi=32 --set key_L_au=125 --set key_dex=5
         --set planet_clump_h=$CLUMP --set orbit_speed=$SPEED)
@@ -42,7 +45,9 @@ case $MOVIE in
   # node at 180 deg, so the camera passes ~17 au from it); the 90 deg orbit crosses over the pole
   incl45)  COMMON+=(--set inc_deg=45 --set pattern_mode=fixed --set pattern_deg=190 --set movie_name=diskplanet_incl45$SFX) ;;
   polar)   COMMON+=(--set inc_deg=90 --set pattern_mode=fixed --set pattern_deg=190 --set movie_name=diskplanet_polar$SFX) ;;
-  *) echo "movie must be coorbit, lap, incl45 or polar"; exit 1 ;;
+  polarfly) NFR=2250
+           COMMON+=(--set inc_deg=90 --set pattern_mode=fixed --set pattern_deg=190 --set movie_name=diskplanet_polarfly$SFX "${FLY[@]}") ;;
+  *) echo "movie must be coorbit, lap, incl45, polar or polarfly"; exit 1 ;;
 esac
 mkdir -p "$OUT"
 # Monte Carlo fields are shared between the movies (computed once in $MCDIR)
@@ -52,9 +57,10 @@ case $WHAT in
   vis|ir)
     CMD=orbit; EXTRA=()
     if [ "$WHAT" = ir ]; then CMD=orbit-ir; EXTRA=("${TEMP3D[@]}"); fi
-    step=$(( (NFR + NJOBS - 1) / NJOBS ))
-    for ((a = 0; a < NFR; a += step)); do
-      b=$(( a + step < NFR ? a + step : NFR ))
+    F0=${FRAMES%%:*}; F1=${FRAMES##*:}; F0=${F0:-0}; F1=${F1:-$NFR}
+    step=$(( (F1 - F0 + NJOBS - 1) / NJOBS ))
+    for ((a = F0; a < F1; a += step)); do
+      b=$(( a + step < F1 ? a + step : F1 ))
       sbatch --parsable --job-name="dp-$MOVIE$SFX-$WHAT-$a" --cpus-per-task=16 --time=12:00:00 \
         $SB $CMD "$OUT" --n-frames $NFR --frames $a:$b "${COMMON[@]}" "${EXTRA[@]}"
     done ;;

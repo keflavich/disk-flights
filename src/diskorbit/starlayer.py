@@ -14,7 +14,6 @@ f = asinh(I / beta) / asinh(Lmax / beta), beta 0.3, Lmax 960, with highlights ab
 white_start blended toward white (up to `white`). 180-degree shutter: 5 sub-positions over half
 a frame step. Composite: out = 1 - (1 - scene)(1 - stars) in display space.
 """
-import json
 import os
 import time
 
@@ -102,12 +101,11 @@ class StarLayer:
 def run(outdir, modes, p, n_frames, fps, nphot=2e7, log=print):
     import imageio.v3 as iio
     from nightsky import animate
-    from .render import make_scene, movie_prefix, pattern_angle, make_view, orbit_state, camera_forward, orbit_schedule, save_png
+    from .render import make_scene, movie_prefix, pattern_angle, make_view, CameraTrack, save_png
     sc = make_scene(outdir, p, nphot, log=log)
     sl = StarLayer(sc, p["width"], p["height"], p["fov_deg"])
     log(f"star layer: {len(sl.dirs)} stars from {sl.source}; psf sigma {sl.sig:.2f} px, halo {sl.rh:.2f} px")
-    phis = np.unwrap(np.radians(orbit_schedule(n_frames, p["inc_deg"], speed=p.get("orbit_speed", "surface"))))
-    phis = np.degrees(np.append(phis, phis[-1] + (phis[-1] - phis[-2])))
+    track = CameraTrack(p, n_frames)
     for m in modes:
         os.makedirs(os.path.join(outdir, f"movie_{m}_stars"), exist_ok=True)
     t0 = time.time()
@@ -115,14 +113,13 @@ def run(outdir, modes, p, n_frames, fps, nphot=2e7, log=print):
         outs = [os.path.join(outdir, f"movie_{m}_stars", f"f{i:05d}.png") for m in modes]
         if all(os.path.exists(o) for o in outs):
             continue
-        pos, vel = orbit_state(phis[i], p["a_au"], p["inc_deg"])
-        sc.pattern_angle = pattern_angle(p, phis[i])
+        pos, _, _, ph = track.state(i)
+        sc.pattern_angle = pattern_angle(p, ph)
         rgb, amp = sl.colours(pos, p)
         views = []
         for k in range(N_SUB):
-            ph = phis[i] + 0.5 * (phis[i + 1] - phis[i]) * k / (N_SUB - 1)
-            ps, vs = orbit_state(ph, p["a_au"], p["inc_deg"])
-            views.append(make_view(camera_forward(ps, vs, p["toward_star_deg"]), p["width"], p["height"], p["fov_deg"]))
+            _, fs, us, _ = track.state(i + 0.5 * k / (N_SUB - 1))
+            views.append(make_view(fs, p["width"], p["height"], p["fov_deg"], up_ref=us))
         st = tone(sl.layer(views, rgb, amp))
         for m, o in zip(modes, outs):
             scene = iio.imread(os.path.join(outdir, f"movie_{m}", f"f{i:05d}.png")).astype(np.float64) / 255.0
@@ -152,7 +149,7 @@ def run_ir(outdir, sets, p, n_frames, fps, nphot=2e7, log=print):
     import imageio.v3 as iio
     from nightsky import animate
     from . import bands as bd
-    from .render import make_scene, movie_prefix, pattern_angle, make_view, orbit_state, camera_forward, orbit_schedule, save_png
+    from .render import make_scene, movie_prefix, pattern_angle, make_view, CameraTrack, save_png
     sc = make_scene(outdir, p, nphot, log=log, bands="ir")
     vis = spectral.default_grid(20)
     dirs, irr_v, _, teff, source = starfield.earth_stars({"bsc": {"vmax": 6.5, "fetch": False}, "sun_ra_deg": 0.0}, vis)
@@ -162,8 +159,7 @@ def run_ir(outdir, sets, p, n_frames, fps, nphot=2e7, log=print):
     sig, rh, rad_big, rad_small = max(0.75, 1.15 * s), max(1.6, 3.2 * s), int(np.ceil(40 * s)), int(np.ceil(10 * s))
     idx = {name: [bd.band_index(sc.grid, u) for u in bd.COLOUR_SETS[name]] for name in sets}
     log(f"IR star layer: {len(dirs)} stars from {source}; sets {sets}")
-    phis = np.unwrap(np.radians(orbit_schedule(n_frames, p["inc_deg"], speed=p.get("orbit_speed", "surface"))))
-    phis = np.degrees(np.append(phis, phis[-1] + (phis[-1] - phis[-2])))
+    track = CameraTrack(p, n_frames)
     tags = {name: [f"ir_{name}", f"ir_{name}_mm"] for name in sets}
     for name in sets:
         for tg in tags[name]:
@@ -174,14 +170,13 @@ def run_ir(outdir, sets, p, n_frames, fps, nphot=2e7, log=print):
                 if not os.path.exists(os.path.join(outdir, f"movie_{tg}_stars", f"f{i:05d}.png"))]
         if not todo:
             continue
-        pos, _ = orbit_state(phis[i], p["a_au"], p["inc_deg"])
-        sc.pattern_angle = pattern_angle(p, phis[i])
+        pos, _, _, ph = track.state(i)
+        sc.pattern_angle = pattern_angle(p, ph)
         _, col = sc.render(pos, dirs[:, None, :], p["frac"], p["dtau_max"], p["tau_stop"])
         views = []
         for k in range(N_SUB):
-            ph = phis[i] + 0.5 * (phis[i + 1] - phis[i]) * k / (N_SUB - 1)
-            ps, vs = orbit_state(ph, p["a_au"], p["inc_deg"])
-            views.append(make_view(camera_forward(ps, vs, p["toward_star_deg"]), p["width"], p["height"], p["fov_deg"]))
+            _, fs, us, _ = track.state(i + 0.5 * k / (N_SUB - 1))
+            views.append(make_view(fs, p["width"], p["height"], p["fov_deg"], up_ref=us))
         proj = [v.project(dirs) for v in views]
         for name in sorted({n for n, _ in todo}):
             rgb = ir_colours(teff, col[:, 0], sc.opt["k"][idx[name]], sc.grid.wl[idx[name]]) * amp0[:, None]
